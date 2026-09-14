@@ -735,7 +735,7 @@ bool OBS::IsWinrtCaptureSupported() {
 }
 
 //------------------------------------------------------------------------------
-void OBS::RetreiveSupportedVideoEncoders(OBSDataArray& encoders) {
+void OBS::RetreiveSupportedVideoEncoders(OBSDataArray& encoders, bool validate_av1) {
   CLEAR_OBS_DATA_ARRAY(encoders);
 
   obs_get_enum_video_adapters(gs_enum_adapters_callback, this);
@@ -790,13 +790,25 @@ void OBS::RetreiveSupportedVideoEncoders(OBSDataArray& encoders) {
     // Check if the encoder is Valid
     std::string status = "";
     std::string code = "";
-    bool is_encoder_valid = IsEncoderValidSafe(type, status, code, codec);
+    // Audio-device queries must not initialize additional AV1 encoders.
+    // Only probe hardware AV1 paths offered by Ascent; software AV1 is not
+    // a recording option and can make discovery unnecessarily expensive.
+    const bool av1 = strcmp(codec, "av1") == 0;
+    const bool hardware_av1 = strcmp(type, "jim_av1_nvenc") == 0 ||
+      strcmp(type, "av1_texture_amf") == 0 || strcmp(type, "obs_qsv11_av1") == 0;
+    const bool initialization_tested = !av1 || (validate_av1 && hardware_av1);
+    bool is_encoder_valid = initialization_tested &&
+      IsEncoderValidSafe(type, status, code, codec);
+    if (!initialization_tested) {
+      status = "not_tested";
+    }
 
     CREATE_OBS_DATA(item);
     obs_data_set_string(item, "type", type);
     obs_data_set_string(item, "description", name);
     obs_data_set_string(item, "status", status.c_str());
     obs_data_set_bool(item, "valid", is_encoder_valid);
+    obs_data_set_bool(item, "initialization_tested", initialization_tested);
     obs_data_set_string(item, "code", code.c_str());
     blog(LOG_INFO, "Add supported encoder: %s", name);
     obs_data_array_push_back(encoders, item);
@@ -823,16 +835,19 @@ bool OBS::IsEncoderValid(
   const char* type, std::string& status, std::string& code, const char* codec) {
   blog(LOG_INFO, "testing IsEncoderValid (%s)", type);
 
-  if (strcmp(codec, "av1") == 0) {
-    return true;
-  }
+  UNUSED_PARAMETER(codec);
 
   OBSData video_encoder_settings = obs_data_create();
   obs_data_release(video_encoder_settings);
   obs_data_set_string(video_encoder_settings, "id", type);
 
   obs_encoder_t* video_encoder = obs_video_encoder_create(
-    type, "recording_h264", video_encoder_settings, nullptr);
+    type, "encoder_probe", video_encoder_settings, nullptr);
+  if (!video_encoder) {
+    status = "Failed to create encoder";
+    code = "create_failed";
+    return false;
+  }
   obs_encoder_set_video(video_encoder, obs_get_video());
 
   bool is_valid = is_encoder_valid(video_encoder);
@@ -842,11 +857,12 @@ bool OBS::IsEncoderValid(
     status = error ? error : "unknown";
     const char* last_code = obs_encoder_get_last_code(video_encoder);
     code = last_code ? last_code : "unknown";
-    blog(LOG_ERROR, "IsEncoderValid (%s) failed: %s", type, error);
+    blog(LOG_ERROR, "IsEncoderValid (%s) failed: %s", type, status.c_str());
   } else {
     status = "OK";
     blog(LOG_INFO, "IsEncoderValid (%s) ended successfully", type);
   }
+  obs_encoder_release(video_encoder);
   return is_valid;
 }
 
