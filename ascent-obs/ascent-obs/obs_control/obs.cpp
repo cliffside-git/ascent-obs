@@ -735,7 +735,7 @@ bool OBS::IsWinrtCaptureSupported() {
 }
 
 //------------------------------------------------------------------------------
-void OBS::RetreiveSupportedVideoEncoders(OBSDataArray& encoders) {
+void OBS::RetreiveSupportedVideoEncoders(OBSDataArray& encoders, obs_data_t* excluded_encoders) {
   CLEAR_OBS_DATA_ARRAY(encoders);
 
   obs_get_enum_video_adapters(gs_enum_adapters_callback, this);
@@ -781,8 +781,8 @@ void OBS::RetreiveSupportedVideoEncoders(OBSDataArray& encoders) {
       continue;
     }
 
-    // Software AV1 is not offered by Ascent and can stall during initialization.
-    if (strcmp(type, "ffmpeg_svt_av1") == 0 || strcmp(type, "ffmpeg_aom_av1") == 0) {
+    // The caller owns which encoders to omit, before any initialization.
+    if (obs_data_get_bool(excluded_encoders, type)) {
       continue;
     }
    
