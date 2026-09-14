@@ -735,7 +735,7 @@ bool OBS::IsWinrtCaptureSupported() {
 }
 
 //------------------------------------------------------------------------------
-void OBS::RetreiveSupportedVideoEncoders(OBSDataArray& encoders, bool validate_av1) {
+void OBS::RetreiveSupportedVideoEncoders(OBSDataArray& encoders) {
   CLEAR_OBS_DATA_ARRAY(encoders);
 
   obs_get_enum_video_adapters(gs_enum_adapters_callback, this);
@@ -780,6 +780,11 @@ void OBS::RetreiveSupportedVideoEncoders(OBSDataArray& encoders, bool validate_a
     if (!is_streaming_codec) {
       continue;
     }
+
+    // Software AV1 is not offered by Ascent and can stall during initialization.
+    if (strcmp(type, "ffmpeg_svt_av1") == 0 || strcmp(type, "ffmpeg_aom_av1") == 0) {
+      continue;
+    }
    
     if (is_nvidia_device &&
       isBlackInBlackList(adapter_name_.c_str(), type)) {
@@ -790,25 +795,14 @@ void OBS::RetreiveSupportedVideoEncoders(OBSDataArray& encoders, bool validate_a
     // Check if the encoder is Valid
     std::string status = "";
     std::string code = "";
-    // Audio-device queries must not initialize additional AV1 encoders.
-    // Only probe hardware AV1 paths offered by Ascent; software AV1 is not
-    // a recording option and can make discovery unnecessarily expensive.
-    const bool av1 = strcmp(codec, "av1") == 0;
-    const bool hardware_av1 = strcmp(type, "jim_av1_nvenc") == 0 ||
-      strcmp(type, "av1_texture_amf") == 0 || strcmp(type, "obs_qsv11_av1") == 0;
-    const bool initialization_tested = !av1 || (validate_av1 && hardware_av1);
-    bool is_encoder_valid = initialization_tested &&
-      IsEncoderValidSafe(type, status, code, codec);
-    if (!initialization_tested) {
-      status = "not_tested";
-    }
+    bool is_encoder_valid = IsEncoderValidSafe(type, status, code, codec);
 
     CREATE_OBS_DATA(item);
     obs_data_set_string(item, "type", type);
     obs_data_set_string(item, "description", name);
     obs_data_set_string(item, "status", status.c_str());
     obs_data_set_bool(item, "valid", is_encoder_valid);
-    obs_data_set_bool(item, "initialization_tested", initialization_tested);
+    obs_data_set_bool(item, "initialization_tested", true);
     obs_data_set_string(item, "code", code.c_str());
     blog(LOG_INFO, "Add supported encoder: %s", name);
     obs_data_array_push_back(encoders, item);

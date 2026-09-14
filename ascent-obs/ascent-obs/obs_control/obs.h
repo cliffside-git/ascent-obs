@@ -66,7 +66,7 @@ public:
 
   bool IsWinrtCaptureSupported();
 
-  void RetreiveSupportedVideoEncoders(OBSDataArray& encoders, bool validate_av1 = false);
+  void RetreiveSupportedVideoEncoders(OBSDataArray& encoders);
 
   void RetreiveAudioDevices(const char* source_id, OBSDataArray& devices);
 
