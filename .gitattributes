@@ -11,3 +11,7 @@ Binaries/** filter=lfs diff=lfs merge=lfs -text
 
 obs-studio/cmake/ALL_BUILD.vcxproj.user.in text eol=crlf
 
+# Bash hooks and the commit-format validator must stay LF; a CRLF shebang
+# breaks them under Git for Windows' bash.
+.githooks/* eol=lf
+scripts/commit-format/* eol=lf

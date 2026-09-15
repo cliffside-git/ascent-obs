@@ -1,0 +1,56 @@
+name: Commit format
+
+# Hard gate on commit message and PR description format. The rule lives in
+# AGENTS.md; the validator is scripts/commit-format/check.sh (the same
+# script the local commit-msg hook runs, so what passes locally passes here).
+#
+# This repo is pushed to directly as well as via PRs, so the check runs on
+# both: on a PR it covers base..head plus the PR description; on a push to
+# main it covers the pushed range. `edited` is in the PR trigger list so
+# fixing the description re-runs the check without a push.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: commit-format-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  commit-format:
+    name: Commit format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Self-test the validator
+        run: bash scripts/commit-format/test.sh
+
+      - name: Check commits
+        env:
+          # PR: everything on the branch. Push: the pushed range (`before` is
+          # all zeros on a brand-new branch, which can't happen for main).
+          RANGE: >-
+            ${{ github.event_name == 'pull_request'
+                && format('origin/{0}..{1}', github.base_ref, github.event.pull_request.head.sha)
+                || format('{0}..{1}', github.event.before, github.sha) }}
+        run: bash scripts/commit-format/check.sh --range "$RANGE"
+
+      - name: Check the PR description
+        if: github.event_name == 'pull_request'
+        env:
+          # Through env, not inline, so a PR body can't inject shell.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/pr-body.txt"
+          bash scripts/commit-format/check.sh --body "$RUNNER_TEMP/pr-body.txt"

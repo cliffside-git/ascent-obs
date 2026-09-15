@@ -1,0 +1,17 @@
+
+
+What:
+Why:
+Previous behavior:
+Blast radius:
+Other options considered:
+Testing:
+
+# Subject on the first line: type(scope): summary   (<=72 chars)
+#   types: feat fix perf refactor docs test build ci chore style release revert
+# Blank line, then the six sections. What / Why / Testing need real text;
+# Previous behavior / Blast radius / Other options considered may say "none".
+# Previous behavior: what the code did before this change.
+# Testing: what you ran, what you clicked, on what. Screenshots for
+# frontend changes go in the PR description.
+# Full rule: AGENTS.md
