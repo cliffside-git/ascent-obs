@@ -33,3 +33,13 @@ Open `ascent-obs/ascent-obs.sln` in Visual Studio, set configuration to **RelWit
 ```
 
 Output goes to `Desktop\ascent-obs`. Use `-DryRun` to preview, or `-TargetPath "C:\path"` to change the destination.
+
+## Commit messages
+
+Every commit and PR description follows a fixed format (`What` / `Why` / `Previous behavior` / `Blast radius` / `Other options considered` / `Testing`); CI rejects anything else. Once per clone, turn on the local hook and template so you find out at commit time instead:
+
+```bash
+scripts/commit-format/install.sh
+```
+
+The full rule is in `AGENTS.md`. Changing the rule or any workflow needs a PR approved by a code owner (`.github/CODEOWNERS`).

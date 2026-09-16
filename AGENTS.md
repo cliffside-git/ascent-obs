@@ -40,9 +40,13 @@ Testing: what you ran and what you did by hand, on what.
 One-time setup per clone, so the hook and template are active:
 
 ```
-git config core.hooksPath .githooks
-git config commit.template .gitmessage
+scripts/commit-format/install.sh
 ```
+
+Changing this rule, the validator, the hook, or any workflow under
+`.github/` takes a PR approved by a code owner (see `.github/CODEOWNERS`);
+branch protection applies to admins too, so there is no bypass. Do not
+try to weaken the check inside a feature PR — it will be blocked.
 
 Agents writing commits: put the sections in the `-m` body (or a `-F` file);
 don't rely on the template. A commit rejected by the hook is not lost — the

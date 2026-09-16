@@ -1,0 +1,11 @@
+# Paths listed here need an approving review from an owner before they can
+# merge. Branch protection on main requires code-owner review and applies to
+# admins too, so the only way to change CI, the commit-format gate, or this
+# file is a PR that one of the owners approves. An owner cannot approve their
+# own PR, which is why there are two.
+/.github/                 @kaishi3 @judehek
+/.githooks/               @kaishi3 @judehek
+/.gitmessage              @kaishi3 @judehek
+/scripts/commit-format/   @kaishi3 @judehek
+/AGENTS.md                @kaishi3 @judehek
+/CLAUDE.md                @kaishi3 @judehek
