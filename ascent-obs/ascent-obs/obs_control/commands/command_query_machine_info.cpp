@@ -21,7 +21,6 @@ CommandQueryMachineInfo::~CommandQueryMachineInfo() {
 // virtual 
 void CommandQueryMachineInfo::Perform(int identifier, OBSData& data) {
   UNUSED_PARAMETER(identifier);
-  UNUSED_PARAMETER(data);
 
   CREATE_OBS_DATA(result);
 
@@ -49,7 +48,8 @@ void CommandQueryMachineInfo::Perform(int identifier, OBSData& data) {
 
   CREATE_OBS_DATA_ARRAY(video_encoders);
   blog(LOG_INFO, "QueryMachine: retrieve supported video encoders");
-  __super::obs_->RetreiveSupportedVideoEncoders(video_encoders);
+  SET_OBS_DATA(excluded_encoders, obs_data_get_obj(data, "excluded_encoders"));
+  __super::obs_->RetreiveSupportedVideoEncoders(video_encoders, excluded_encoders);
   obs_data_set_array(result, 
                      libascentobs::protocol::kVideoEncoders, 
                      video_encoders);
