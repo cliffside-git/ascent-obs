@@ -11,6 +11,15 @@ namespace obs_control {
  
 extern std::string GetAudioTracksStr(uint32_t enabled_mixers);
 
+extern const char kNoiseSuppressFilterId[];
+extern const char kNoiseSuppressMethodRNNoise[];
+extern const char kNoiseSuppression[];
+
+// reads the optional 'noise_suppression' flag of an 'audio_sources[]' entry;
+// missing == false, and it only applies to input devices
+extern bool ParseNoiseSuppression(obs_data_t* audio_source,
+                                  bool is_input_device);
+
 class OBSAudioSourceControl {
 
 
@@ -39,6 +48,9 @@ public:
 
   // attach/detach an RNNoise noise suppression filter (idempotent)
   void SetNoiseSuppression(bool enabled);
+
+  // true when the loaded OBS provides the RNNoise noise suppression filter
+  static bool IsNoiseSuppressionSupported();
 
   obs_source_t* audio_source() { return obs_source_; }
 

@@ -33,3 +33,11 @@ Open `ascent-obs/ascent-obs.sln` in Visual Studio, set configuration to **RelWit
 ```
 
 Output goes to `Desktop\ascent-obs`. Use `-DryRun` to preview, or `-TargetPath "C:\path"` to change the destination.
+
+## Tests
+
+```powershell
+.\scripts\run_tests.ps1
+```
+
+Compiles `ascent-obs/tests/*_test.cpp` against the OBS build from steps 1-2 and runs them (OBS itself is not rebuilt). Use `-ObsStudioDir "C:\path\to\obs-studio"` to point at a build in another checkout.

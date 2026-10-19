@@ -21,6 +21,7 @@ extern const char kAudioInputDevices[];
 extern const char kAudioOutputDevices[];
 extern const char kVideoEncoders[];
 extern const char kWinrtCaptureSupported[];
+extern const char kNoiseSuppressionSupported[];
 extern const char KIsWindowCapture[];
 
 // known video encoders

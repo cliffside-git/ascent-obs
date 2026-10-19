@@ -16,6 +16,7 @@ const char kAudioInputDevices[] = "adio_in_devs";
 const char kAudioOutputDevices[] = "adio_out_devs";
 const char kVideoEncoders[] = "vid_encs";
 const char kWinrtCaptureSupported[] = "winrt_capture_supported";
+const char kNoiseSuppressionSupported[] = "noise_suppression_supported";
 const char KIsWindowCapture[] = "is_window_capture";
 const char kFilenameField[] = "filename";
 const char kMaxFileSizeField[] = "max_file_size_bytes";

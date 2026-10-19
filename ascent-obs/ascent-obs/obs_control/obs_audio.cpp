@@ -30,7 +30,6 @@ const char* kAudioProccessPlugin = "audio_capture_process";
 const char* kAudioSampleRate = "sample_rate";
 const char* kAudioTracks = "tracks";
 const char* kAudioSources = "audio_sources";
-const char* kNoiseSuppression = "noise_suppression";
 const char* kDefualtDesktopSourceName = "output_game";
 const char* kDefualtMicSourceName = "input_mic";
 
@@ -700,13 +699,8 @@ void OBSAudioControl::AddAudioSource(OBSData& audio_source,
     tracks = (uint32_t)obs_data_get_int(audio_source, "tracks");
   }
 
-  // optional; missing == false (input devices only)
-  bool noise_suppression = obs_data_get_bool(audio_source, kNoiseSuppression);
-  if (noise_suppression && !is_input_device) {
-    blog(LOG_WARNING, "ignore '%s' for output device [%s]", kNoiseSuppression,
-         device_id);
-    noise_suppression = false;
-  }
+  bool noise_suppression =
+      ParseNoiseSuppression(audio_source, is_input_device);
 
   auto existing = audio_sources_.find(source_name);
   OBSAudioSourceControlPtr control;
