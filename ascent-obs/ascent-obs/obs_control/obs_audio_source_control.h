@@ -37,6 +37,9 @@ public:
   bool is_mono() { return mono_; }
   void SetMono(bool val);
 
+  // attach/detach an RNNoise noise suppression filter (idempotent)
+  void SetNoiseSuppression(bool enabled);
+
   obs_source_t* audio_source() { return obs_source_; }
 
   void AddToScene(obs_scene_t* scene);
@@ -54,6 +57,9 @@ private:
 
   OBSSource obs_source_;
   obs_fader_t* obs_fader_ = nullptr;
+
+  // owned by |obs_source_|'s filter list while attached
+  OBSSource noise_suppress_filter_;
 
   bool added_to_scene_ = false;
 };

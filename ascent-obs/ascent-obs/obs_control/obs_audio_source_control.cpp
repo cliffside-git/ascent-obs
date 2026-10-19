@@ -150,6 +150,40 @@ void OBSAudioSourceControl::SetMono(bool val) {
   blog(LOG_INFO, "Update (%s) force mono:", name_.c_str(), val ? "on" : "off");
 }
 
+//------------------------------------------------------------------------------
+void OBSAudioSourceControl::SetNoiseSuppression(bool enabled) {
+  if (!obs_source_) {
+    return;
+  }
+
+  bool attached = noise_suppress_filter_.Get() != nullptr;
+  if (attached == enabled) {
+    return;
+  }
+
+  if (!enabled) {
+    obs_source_filter_remove(obs_source_, noise_suppress_filter_);
+    noise_suppress_filter_ = nullptr;
+    blog(LOG_INFO, "Update (%s) noise suppression: off", name_.c_str());
+    return;
+  }
+
+  OBSDataAutoRelease settings = obs_data_create();
+  obs_data_set_string(settings, "method", "rnnoise");
+
+  OBSSourceAutoRelease filter = obs_source_create_private(
+      "noise_suppress_filter_v2", "ascentobs noise suppression", settings);
+  if (!filter) {
+    blog(LOG_ERROR, "(%s) failed to create noise suppression filter",
+         name_.c_str());
+    return;
+  }
+
+  obs_source_filter_add(obs_source_, filter);
+  noise_suppress_filter_ = filter.Get();
+  blog(LOG_INFO, "Update (%s) noise suppression: on (rnnoise)", name_.c_str());
+}
+
 void OBSAudioSourceControl::AddToScene(obs_scene_t* scene) {
   if (added_to_scene_) {
     return;

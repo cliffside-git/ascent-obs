@@ -30,6 +30,7 @@ const char* kAudioProccessPlugin = "audio_capture_process";
 const char* kAudioSampleRate = "sample_rate";
 const char* kAudioTracks = "tracks";
 const char* kAudioSources = "audio_sources";
+const char* kNoiseSuppression = "noise_suppression";
 const char* kDefualtDesktopSourceName = "output_game";
 const char* kDefualtMicSourceName = "input_mic";
 
@@ -699,6 +700,14 @@ void OBSAudioControl::AddAudioSource(OBSData& audio_source,
     tracks = (uint32_t)obs_data_get_int(audio_source, "tracks");
   }
 
+  // optional; missing == false (input devices only)
+  bool noise_suppression = obs_data_get_bool(audio_source, kNoiseSuppression);
+  if (noise_suppression && !is_input_device) {
+    blog(LOG_WARNING, "ignore '%s' for output device [%s]", kNoiseSuppression,
+         device_id);
+    noise_suppression = false;
+  }
+
   auto existing = audio_sources_.find(source_name);
   OBSAudioSourceControlPtr control;
 
@@ -721,16 +730,16 @@ void OBSAudioControl::AddAudioSource(OBSData& audio_source,
     blog(LOG_INFO,
          "Add new audio source id:%s name:%s type:%s mono:%d volume:%d "
          "use-device-timing:%d "
-         "tracks:%d ",
+         "tracks:%d noise-suppression:%d",
          device_id, source_name.c_str(), is_input_device ? "input" : "output",
-         mono, volume, use_device_timing, tracks);
-  } else { // update e 
+         mono, volume, use_device_timing, tracks, noise_suppression);
+  } else { // update e
     blog(LOG_INFO,
          "Update audio source id:%s name:%s type:%s mono:%d volume:%d "
          "use-device-timing:%d "
-         "tracks:%d ",
+         "tracks:%d noise-suppression:%d",
          device_id, source_name.c_str(), is_input_device ? "input" : "output",
-         mono, volume, use_device_timing, tracks);   
+         mono, volume, use_device_timing, tracks, noise_suppression);
     control = existing->second;
   }
 
@@ -742,6 +751,7 @@ void OBSAudioControl::AddAudioSource(OBSData& audio_source,
   control->SetVolume(volume);
   control->set_mixer_track(tracks);
   control->SetMono(mono);
+  control->SetNoiseSuppression(noise_suppression);
 }
 
 // -----------------------------------------------------------------------------
