@@ -53,11 +53,28 @@ void SetCustomEncoderParameters(OBSData& video_settings,
 
 bool GetAudioExtraParam(OBSData& audio_settings, const char *name);
 
+// track names end up quoted on the ffmpeg-mux command line, so each one is
+// capped (in bytes, on a UTF-8 boundary) to keep the line well inside the
+// CreateProcess limit
+const size_t kTrackNameMaxBytes = 64;
+
+// makes a 'track_names' entry safe for the muxer command line: drops invalid
+// UTF-8, control characters (C0, DEL, C1) and '"' / '\' (they would break
+// the quoted argument), trims spaces at both ends and cuts the result to
+// kTrackNameMaxBytes without splitting a character. "" means: use the
+// default name.
+std::string SanitizeTrackName(const char* name);
+
 // reads the optional 'track_names' array of the audio 'extra_options': one
 // {"name": "..."} object per mixer, index 0 = track 1. Always returns
-// |max_tracks| names; missing, empty or extra entries give "" (default name).
-// Non-object entries are dropped by obs_data's JSON parser, so they shift
-// the following names; send {} to keep a slot on its default.
+// |max_tracks| sanitized names; missing, empty or extra entries give ""
+// (default TrackN name).
+// - Entries must be objects: obs_data's JSON parser drops anything else, so a
+//   string or null entry shifts the following names. Send {} to keep a slot
+//   on its default.
+// - Like the other audio settings, names are read only when the helper is
+//   idle and apply at the next fresh start (all outputs stopped); a START
+//   that joins an active capture keeps that capture's names.
 std::vector<std::string> ParseTrackNames(obs_data_t* audio_extra_options,
                                          size_t max_tracks);
 
