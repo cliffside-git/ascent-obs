@@ -43,6 +43,7 @@ $Includes = @(
 $Sources = @(
     (Join-Path $SrcDir "obs_control\obs_audio_source_control.cpp"),
     (Join-Path $SrcDir "obs_control\obs_utils.cpp"),
+    (Join-Path $SrcDir "obs_control\settings.cpp"),
     (Join-Path $LibDir "internal\communications\protocol.cpp")
 ) | ForEach-Object { "`"$_`"" }
 

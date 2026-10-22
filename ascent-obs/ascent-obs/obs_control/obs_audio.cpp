@@ -169,6 +169,7 @@ void OBSAudioControl::InitAudioSources(OBSData& audio_settings,
 
     if (advanced_output) {
       advanced_output->set_supported_tracks(active_tracks_);
+      advanced_output->set_track_names(audio_extra_options);
     }
 
   } catch (...) {

@@ -31,6 +31,7 @@ const char kSettingsAudio[] = "audio_settings";
 const char kSettingsAudioOutput[] = "output";
 const char kSettingsAudioInput[] = "input";
 const char kSettingsExtraOptions[] = "extra_options";
+const char kSettingsTrackNames[] = "track_names";
 
 const char kSettingsVideoFPS[] = "fps";
 const int kSettingsVideoFPSDefault = 30;
@@ -150,6 +151,26 @@ bool settings::GetAudioExtraParam(OBSData& audio_settings, const char *name) {
     audio_settings, settings::kSettingsExtraOptions));
 
   return obs_data_get_bool(audio_extra_options, name);
+}
+
+std::vector<std::string> settings::ParseTrackNames(
+    obs_data_t* audio_extra_options,
+    size_t max_tracks) {
+  std::vector<std::string> names(max_tracks);
+  if (!audio_extra_options) {
+    return names;
+  }
+
+  OBSDataArrayAutoRelease items =
+      obs_data_get_array(audio_extra_options, kSettingsTrackNames);
+  size_t count = obs_data_array_count(items);
+  for (size_t i = 0; i < count && i < max_tracks; i++) {
+    OBSDataAutoRelease item = obs_data_array_item(items, i);
+    const char* name = obs_data_get_string(item, "name");
+    names[i] = name ? name : "";
+  }
+
+  return names;
 }
 
 int settings::GetSupportedAudioTracksCount(const uint32_t& tracks) {

@@ -157,6 +157,11 @@ public:
 
   void set_supported_tracks(uint32_t audio_tracks);
 
+  // per-mixer audio encoder names from 'track_names' (see
+  // settings::ParseTrackNames); ffmpeg-mux writes them as the stream title
+  // and handler name. Applied the next time the outputs are idle and set up.
+  void set_track_names(obs_data_t* audio_extra_options);
+
   uint32_t supported_tracks() {
     return supported_tracks_;
   }
@@ -200,6 +205,7 @@ public:
 
   OBSEncoder aacTrack[MAX_AUDIO_MIXES];
   std::string aacEncoderID[MAX_AUDIO_MIXES];
+  std::string track_names_[MAX_AUDIO_MIXES];
 
   OBSData system_game_info_;
 
