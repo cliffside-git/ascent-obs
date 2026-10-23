@@ -571,6 +571,9 @@ static void create_audio_stream(struct ffmpeg_mux *ffm, int idx)
 		return;
 
 	av_dict_set(&stream->metadata, "title", ffm->audio[idx].name, 0);
+	// ASCENT_EDIT_START: Name the MP4 handler after the track too
+	av_dict_set(&stream->metadata, "handler_name", ffm->audio[idx].name, 0);
+	// ASCENT_EDIT_END: Name the MP4 handler after the track too
 
 	stream->time_base = (AVRational){1, ffm->audio[idx].sample_rate};
 

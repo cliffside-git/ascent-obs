@@ -16,7 +16,30 @@ std::string GetAudioTracksStr(uint32_t enabled_mixers) {
   return utils::join(enabled_tracks);
 }
 
+const char kNoiseSuppressFilterId[] = "noise_suppress_filter_v2";
+const char kNoiseSuppressMethodRNNoise[] = "rnnoise";
+const char kNoiseSuppression[] = "noise_suppression";
+
+bool ParseNoiseSuppression(obs_data_t* audio_source, bool is_input_device) {
+  if (!obs_data_get_bool(audio_source, kNoiseSuppression)) {
+    return false;
+  }
+
+  if (!is_input_device) {
+    blog(LOG_WARNING, "ignore '%s' for output device [%s]", kNoiseSuppression,
+         obs_data_get_string(audio_source, "device_id"));
+    return false;
+  }
+
+  return true;
+}
+
 };  // namespace obs_control
+
+namespace {
+const char kNoiseSuppressMethod[] = "method";
+const char kNoiseSuppressFilterName[] = "ascentobs noise suppression";
+}  // namespace
 
 using namespace obs_control;
 
@@ -148,6 +171,64 @@ void OBSAudioSourceControl::SetMono(bool val) {
   mono_ = val;
   obs_source_set_flags(obs_source_, flags);
   blog(LOG_INFO, "Update (%s) force mono:", name_.c_str(), val ? "on" : "off");
+}
+
+//------------------------------------------------------------------------------
+void OBSAudioSourceControl::SetNoiseSuppression(bool enabled) {
+  if (!obs_source_) {
+    return;
+  }
+
+  bool attached = noise_suppress_filter_.Get() != nullptr;
+  if (attached == enabled) {
+    return;
+  }
+
+  if (!enabled) {
+    obs_source_filter_remove(obs_source_, noise_suppress_filter_);
+    noise_suppress_filter_ = nullptr;
+    blog(LOG_INFO, "Update (%s) noise suppression: off", name_.c_str());
+    return;
+  }
+
+  OBSDataAutoRelease settings = obs_data_create();
+  obs_data_set_string(settings, kNoiseSuppressMethod,
+                      kNoiseSuppressMethodRNNoise);
+
+  OBSSourceAutoRelease filter = obs_source_create_private(
+      kNoiseSuppressFilterId, kNoiseSuppressFilterName, settings);
+  if (!filter) {
+    blog(LOG_ERROR, "(%s) failed to create noise suppression filter",
+         name_.c_str());
+    return;
+  }
+
+  // obs_source_filter_add silently declines duplicate/incompatible filters
+  obs_source_filter_add(obs_source_, filter);
+  OBSSourceAutoRelease added =
+      obs_source_get_filter_by_name(obs_source_, kNoiseSuppressFilterName);
+  if (added.Get() != filter.Get()) {
+    blog(LOG_ERROR, "(%s) failed to attach noise suppression filter",
+         name_.c_str());
+    return;
+  }
+
+  noise_suppress_filter_ = filter.Get();
+  blog(LOG_INFO, "Update (%s) noise suppression: on (rnnoise)", name_.c_str());
+}
+
+//------------------------------------------------------------------------------
+// static
+bool OBSAudioSourceControl::IsNoiseSuppressionSupported() {
+  // NULL when the filter type isn't registered (e.g. obs-filters not loaded);
+  // the v2 default method is rnnoise only when built with RNNoise
+  OBSDataAutoRelease defaults = obs_get_source_defaults(kNoiseSuppressFilterId);
+  if (!defaults) {
+    return false;
+  }
+
+  return strcmp(obs_data_get_string(defaults, kNoiseSuppressMethod),
+                kNoiseSuppressMethodRNNoise) == 0;
 }
 
 void OBSAudioSourceControl::AddToScene(obs_scene_t* scene) {

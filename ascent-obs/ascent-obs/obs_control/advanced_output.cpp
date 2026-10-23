@@ -370,7 +370,7 @@ inline void AdvancedOutput::UpdateAudioSettings() {
   for (size_t i = 0; i < kAudioMixes; i++) {
     std::string def_name = "Track";
     def_name += std::to_string((int)i + 1);
-    SetEncoderName(aacTrack[i], nullptr, def_name.c_str());
+    SetEncoderName(aacTrack[i], track_names_[i].c_str(), def_name.c_str());
   }
 
   for (size_t i = 0; i < kAudioMixes; i++) {
@@ -709,6 +709,18 @@ void AdvancedOutput::set_supported_tracks(uint32_t audio_tracks) {
        obs_control::GetAudioTracksStr(supported_tracks_).c_str());
 }
 
+
+//------------------------------------------------------------------------------
+void AdvancedOutput::set_track_names(obs_data_t* audio_extra_options) {
+  auto names = settings::ParseTrackNames(audio_extra_options, kAudioMixes);
+  for (size_t i = 0; i < kAudioMixes; i++) {
+    track_names_[i] = names[i];
+    if (!names[i].empty()) {
+      blog(LOG_INFO, "audio track %d name: '%s'", (int)i + 1,
+           names[i].c_str());
+    }
+  }
+}
 
 //------------------------------------------------------------------------------
 int AdvancedOutput::GetOutputTracks(const char* output_type,

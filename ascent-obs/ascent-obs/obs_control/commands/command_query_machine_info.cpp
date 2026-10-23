@@ -2,6 +2,7 @@
 #include "obs_control/obs_utils.h"
 #include "obs_control/obs.h"
 #include "obs_control/obs_audio.h"
+#include "obs_control/obs_audio_source_control.h"
 
 using namespace obs_control;
 
@@ -56,6 +57,14 @@ void CommandQueryMachineInfo::Perform(int identifier, OBSData& data) {
 
   obs_data_set_bool(result, libascentobs::protocol::kWinrtCaptureSupported,
                     __super::obs_->IsWinrtCaptureSupported());
+
+  // lets the app detect engines that ignore 'audio_sources[].noise_suppression'
+  bool noise_suppression_supported =
+      OBSAudioSourceControl::IsNoiseSuppressionSupported();
+  blog(LOG_INFO, "QueryMachine: noise suppression supported: %d",
+       noise_suppression_supported);
+  obs_data_set_bool(result, libascentobs::protocol::kNoiseSuppressionSupported,
+                    noise_suppression_supported);
 
   blog(LOG_INFO, "QueryMachine: sending result");
 

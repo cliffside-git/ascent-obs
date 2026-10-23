@@ -31,6 +31,7 @@ const char kSettingsAudio[] = "audio_settings";
 const char kSettingsAudioOutput[] = "output";
 const char kSettingsAudioInput[] = "input";
 const char kSettingsExtraOptions[] = "extra_options";
+const char kSettingsTrackNames[] = "track_names";
 
 const char kSettingsVideoFPS[] = "fps";
 const int kSettingsVideoFPSDefault = 30;
@@ -150,6 +151,94 @@ bool settings::GetAudioExtraParam(OBSData& audio_settings, const char *name) {
     audio_settings, settings::kSettingsExtraOptions));
 
   return obs_data_get_bool(audio_extra_options, name);
+}
+
+std::vector<std::string> settings::ParseTrackNames(
+    obs_data_t* audio_extra_options,
+    size_t max_tracks) {
+  std::vector<std::string> names(max_tracks);
+  if (!audio_extra_options) {
+    return names;
+  }
+
+  OBSDataArrayAutoRelease items =
+      obs_data_get_array(audio_extra_options, kSettingsTrackNames);
+  size_t count = obs_data_array_count(items);
+  for (size_t i = 0; i < count && i < max_tracks; i++) {
+    OBSDataAutoRelease item = obs_data_array_item(items, i);
+    names[i] = settings::SanitizeTrackName(obs_data_get_string(item, "name"));
+  }
+
+  return names;
+}
+
+namespace {
+// byte length of the valid UTF-8 sequence at |p|, 0 if it is not one (stops
+// at the terminating NUL, which is never a continuation byte)
+size_t Utf8SequenceLength(const unsigned char* p) {
+  if (p[0] < 0x80) {
+    return 1;
+  }
+
+  size_t len = 0;
+  unsigned char min = 0x80;
+  unsigned char max = 0xBF;
+  if (p[0] >= 0xC2 && p[0] <= 0xDF) {
+    len = 2;
+  } else if (p[0] >= 0xE0 && p[0] <= 0xEF) {
+    len = 3;
+    min = p[0] == 0xE0 ? 0xA0 : 0x80;  // no overlong forms
+    max = p[0] == 0xED ? 0x9F : 0xBF;  // no surrogates
+  } else if (p[0] >= 0xF0 && p[0] <= 0xF4) {
+    len = 4;
+    min = p[0] == 0xF0 ? 0x90 : 0x80;  // no overlong forms
+    max = p[0] == 0xF4 ? 0x8F : 0xBF;  // nothing above U+10FFFF
+  } else {
+    return 0;
+  }
+
+  if (p[1] < min || p[1] > max) {
+    return 0;
+  }
+  for (size_t i = 2; i < len; i++) {
+    if (p[i] < 0x80 || p[i] > 0xBF) {
+      return 0;
+    }
+  }
+  return len;
+}
+}  // namespace
+
+std::string settings::SanitizeTrackName(const char* name) {
+  std::string result;
+  if (!name) {
+    return result;
+  }
+
+  const unsigned char* p = reinterpret_cast<const unsigned char*>(name);
+  while (*p) {
+    size_t len = Utf8SequenceLength(p);
+    if (len == 0) {
+      p++;
+      continue;
+    }
+
+    bool drop = (len == 1 && (*p < 0x20 || *p == 0x7F || *p == '"' ||
+                              *p == '\\' || (*p == ' ' && result.empty()))) ||
+                (len == 2 && p[0] == 0xC2 && p[1] < 0xA0);  // C1 controls
+    if (!drop) {
+      if (result.size() + len > kTrackNameMaxBytes) {
+        break;
+      }
+      result.append(reinterpret_cast<const char*>(p), len);
+    }
+    p += len;
+  }
+
+  while (!result.empty() && result.back() == ' ') {
+    result.pop_back();
+  }
+  return result;
 }
 
 int settings::GetSupportedAudioTracksCount(const uint32_t& tracks) {

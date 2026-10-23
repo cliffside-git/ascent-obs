@@ -169,6 +169,7 @@ void OBSAudioControl::InitAudioSources(OBSData& audio_settings,
 
     if (advanced_output) {
       advanced_output->set_supported_tracks(active_tracks_);
+      advanced_output->set_track_names(audio_extra_options);
     }
 
   } catch (...) {
@@ -699,6 +700,9 @@ void OBSAudioControl::AddAudioSource(OBSData& audio_source,
     tracks = (uint32_t)obs_data_get_int(audio_source, "tracks");
   }
 
+  bool noise_suppression =
+      ParseNoiseSuppression(audio_source, is_input_device);
+
   auto existing = audio_sources_.find(source_name);
   OBSAudioSourceControlPtr control;
 
@@ -721,16 +725,16 @@ void OBSAudioControl::AddAudioSource(OBSData& audio_source,
     blog(LOG_INFO,
          "Add new audio source id:%s name:%s type:%s mono:%d volume:%d "
          "use-device-timing:%d "
-         "tracks:%d ",
+         "tracks:%d noise-suppression:%d",
          device_id, source_name.c_str(), is_input_device ? "input" : "output",
-         mono, volume, use_device_timing, tracks);
-  } else { // update e 
+         mono, volume, use_device_timing, tracks, noise_suppression);
+  } else { // update e
     blog(LOG_INFO,
          "Update audio source id:%s name:%s type:%s mono:%d volume:%d "
          "use-device-timing:%d "
-         "tracks:%d ",
+         "tracks:%d noise-suppression:%d",
          device_id, source_name.c_str(), is_input_device ? "input" : "output",
-         mono, volume, use_device_timing, tracks);   
+         mono, volume, use_device_timing, tracks, noise_suppression);
     control = existing->second;
   }
 
@@ -742,6 +746,7 @@ void OBSAudioControl::AddAudioSource(OBSData& audio_source,
   control->SetVolume(volume);
   control->set_mixer_track(tracks);
   control->SetMono(mono);
+  control->SetNoiseSuppression(noise_suppression);
 }
 
 // -----------------------------------------------------------------------------
