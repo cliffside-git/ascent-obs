@@ -212,6 +212,9 @@ private:
   bool InitMonitorSource(OBSData& monitor_handle, OBSData& error_result);
   bool InitWindowSource(OBSData& window_setting, OBSData& error_result);
   bool InitBRBSource(OBSData& brb_setting, OBSData& error_result);
+  // monitor is the only capture and the desktop asked to show BRB instead of
+  // the monitor while the game isn't in the foreground (brb_when_unfocused)
+  bool IsMonitorPrimaryWithBrb();
   bool InitTobiiGazeSource(OBSData& gaze_setting);
   bool InitGameSource(OBSData& game_setting,
                       OBSData& error_result,
@@ -331,6 +334,10 @@ private:
   bool game_source_capture_failure_ = false;
 
   bool keep_recording_on_lost_focus_ = false;
+
+  // from the monitor payload; kept here so it survives the monitor source
+  // being recreated in compatibility mode
+  bool monitor_brb_when_unfocused_ = false;
 
   bool disable_shutdown_on_game_exit_ = false;
 

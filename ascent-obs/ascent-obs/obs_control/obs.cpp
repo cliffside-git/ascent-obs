@@ -599,6 +599,11 @@ bool OBS::InitScene(OBSData& scene_settings, OBSData& error_result) {
 
   if (!capture_monitor && game_capture) {
     InitBRBSource(brb_source, error_result);
+  } else if (IsMonitorPrimaryWithBrb()) {
+    // monitor only capture: BRB hides the desktop while the game is unfocused
+    blog(LOG_INFO, "monitor primary: create BRB (%s settings)",
+         brb_source ? "scene" : "default");
+    InitBRBSource(brb_source, error_result);
   }
 
   SET_OBS_DATA(tobii_source, obs_data_get_obj(
@@ -632,7 +637,10 @@ bool OBS::InitScene(OBSData& scene_settings, OBSData& error_result) {
   /////////////////////////////////////////////////////////////////////////////
   // do not update visible if already running
   if (!IsActive()) {
-    UpdateSourcesVisiblity(game_in_foreground, false);
+    // monitor primary starts on the monitor; the desktop sends the real focus
+    // state right after the recording starts
+    UpdateSourcesVisiblity(
+        IsMonitorPrimaryWithBrb() ? true : game_in_foreground, false);
     obs_set_output_source(0, obs_scene_get_source(scene_->get_scene()));
   }
 
@@ -1442,6 +1450,8 @@ bool OBS::InitMonitorSource(OBSData& monitor_setting, OBSData& error_result) {
 
   if (!result) {
     monitor_source_.reset(nullptr);
+  } else {
+    monitor_brb_when_unfocused_ = monitor_source_->brb_when_unfocused();
   }
 
   UNUSED_PARAMETER(error_result);
@@ -1498,6 +1508,13 @@ bool OBS::InitBRBSource(OBSData& brb_setting, OBSData& error_result) {
   }
 
   return result;
+}
+
+//------------------------------------------------------------------------------
+bool OBS::IsMonitorPrimaryWithBrb() {
+  return settings::IsMonitorPrimaryWithBrb(
+      monitor_brb_when_unfocused_, monitor_source_.get() != nullptr,
+      game_source_.get() != nullptr, window_source_.get() != nullptr);
 }
 
 //------------------------------------------------------------------------------
@@ -1608,8 +1625,11 @@ void OBS::UpdateSourcesVisiblity(bool game_in_foreground,
   }
 
 
+  bool monitor_primary_brb =
+    IsMonitorPrimaryWithBrb() && brb_source_.get() != nullptr;
+
   // record from monitor is case we have monitor source
-  if (has_monitor_source()) {
+  if (has_monitor_source() && !monitor_primary_brb) {
     monitor_source_->SetVisible(!game_in_foreground);
     new_visible_source =
       !game_in_foreground ? monitor_source_.get() : new_visible_source;
@@ -1647,6 +1667,28 @@ void OBS::UpdateSourcesVisiblity(bool game_in_foreground,
         game_source_->did_start_capture() && display_tester_.get()) {
       display_tester_->Register(OBSDisplayTester::TestSouceTypeGame);
     }
+  }
+
+  // monitor is the primary capture (no game source): use the raw focus state
+  // and show BRB instead of the desktop while the game isn't in the foreground
+  if (monitor_primary_brb) {
+    bool show_monitor =
+      settings::MonitorPrimaryShowsMonitor(save_game_in_foreground,
+                                           is_minimized);
+    blog(LOG_INFO,
+         "monitor primary: game foreground=%d minimized=%d -> showing %s",
+         save_game_in_foreground, is_minimized,
+         show_monitor ? "monitor" : "brb");
+    // hide before show, so no frame mixes the desktop into BRB
+    if (show_monitor) {
+      brb_source_->SetVisible(false);
+      monitor_source_->SetVisible(true);
+    } else {
+      monitor_source_->SetVisible(false);
+      brb_source_->SetVisible(true);
+    }
+    new_visible_source = show_monitor ? static_cast<Source*>(monitor_source_.get())
+                                      : brb_source_.get();
   }
 
   if (monitor_source_.get() &&

@@ -1,4 +1,5 @@
 #include "obs_control/scene/monitor_source.h"
+#include "obs_control/settings.h"
 #include <map>
 #include <windows.h>
 
@@ -7,12 +8,6 @@ namespace {
   const char kSettingForce[] = "force";
   const char kSettingMonitorHandle[] = "monitor_handle";
   const char kSettingCursor[] = "cursor";
-  // optional: OBS monitor_capture method (0 auto, 1 DXGI, 2 WGC), absent = 0
-  const char kSettingMethod[] = "method";
-  // optional: show BRB instead of the monitor while the game is unfocused
-  const char kSettingBrbWhenUnfocused[] = "brb_when_unfocused";
-  const int kMethodAuto = 0;
-  const int kMethodMax = 2;
 }
 
 
@@ -70,14 +65,8 @@ bool MonitorSource::Create(OBSData& data, obs_scene_t* scene,
   force_ = obs_data_get_bool(data, kSettingForce);
   cursor_ = obs_data_get_bool(data, kSettingCursor);
 
-  long long method = obs_data_get_int(data, kSettingMethod);
-  if (method < kMethodAuto || method > kMethodMax) {
-    blog(LOG_WARNING, "invalid monitor capture method %lld, using auto (0)",
-         method);
-    method = kMethodAuto;
-  }
-  method_ = (int)method;
-  brb_when_unfocused_ = obs_data_get_bool(data, kSettingBrbWhenUnfocused);
+  method_ = settings::ParseMonitorCaptureMethod(data);
+  brb_when_unfocused_ = settings::ParseMonitorBrbWhenUnfocused(data);
   blog(LOG_INFO, "monitor capture method: %d brb_when_unfocused: %d", method_,
        brb_when_unfocused_);
 
