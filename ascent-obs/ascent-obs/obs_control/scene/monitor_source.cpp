@@ -7,6 +7,12 @@ namespace {
   const char kSettingForce[] = "force";
   const char kSettingMonitorHandle[] = "monitor_handle";
   const char kSettingCursor[] = "cursor";
+  // optional: OBS monitor_capture method (0 auto, 1 DXGI, 2 WGC), absent = 0
+  const char kSettingMethod[] = "method";
+  // optional: show BRB instead of the monitor while the game is unfocused
+  const char kSettingBrbWhenUnfocused[] = "brb_when_unfocused";
+  const int kMethodAuto = 0;
+  const int kMethodMax = 2;
 }
 
 
@@ -64,6 +70,17 @@ bool MonitorSource::Create(OBSData& data, obs_scene_t* scene,
   force_ = obs_data_get_bool(data, kSettingForce);
   cursor_ = obs_data_get_bool(data, kSettingCursor);
 
+  long long method = obs_data_get_int(data, kSettingMethod);
+  if (method < kMethodAuto || method > kMethodMax) {
+    blog(LOG_WARNING, "invalid monitor capture method %lld, using auto (0)",
+         method);
+    method = kMethodAuto;
+  }
+  method_ = (int)method;
+  brb_when_unfocused_ = obs_data_get_bool(data, kSettingBrbWhenUnfocused);
+  blog(LOG_INFO, "monitor capture method: %d brb_when_unfocused: %d", method_,
+       brb_when_unfocused_);
+
   monitor_index_ = 0;
   monitor_handle_ = (uint32_t)obs_data_get_int(data, kSettingMonitorHandle);
 
@@ -114,7 +131,7 @@ bool MonitorSource::CreateMonitorsSource(obs_scene_t* scene,
   obs_data_set_int(moitor_settings, "monitor_index", monitor_index_);
   obs_data_set_bool(moitor_settings, "capture_cursor", cursor_); 
   // METHOD_AUTO = 0, METHOD_DXGI = 1, METHOD_WGC =2
-  obs_data_set_int(moitor_settings, "method", 0); 
+  obs_data_set_int(moitor_settings, "method", method_);
 
   source_.reset(new SourceContext(obs_source_create(
       !compatible ?"monitor_capture" :"monitor_capture_low",

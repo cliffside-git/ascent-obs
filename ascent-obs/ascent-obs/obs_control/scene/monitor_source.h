@@ -22,6 +22,7 @@ public:
   const bool& compatible_mode() { return compatible_mode_; }
   const int& monitor_id() { return monitor_index_; }
   const uint32_t monitor_handle() { return monitor_handle_; }
+  const bool& brb_when_unfocused() { return brb_when_unfocused_; }
 
 public:
   virtual bool Create(OBSData& data, obs_scene_t* scene,
@@ -49,6 +50,8 @@ private:
   bool force_ = false;
   int monitor_index_ = 0;
   uint32_t monitor_handle_ = 0;
+  int method_ = 0;
+  bool brb_when_unfocused_ = false;
   bool compatible_mode_;
 };
 
