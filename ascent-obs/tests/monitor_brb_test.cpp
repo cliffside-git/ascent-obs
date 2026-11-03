@@ -82,6 +82,14 @@ void TestShowsMonitor() {
   CHECK(!settings::MonitorPrimaryShowsMonitor(false, true));
   CHECK(!settings::MonitorPrimaryShowsMonitor(true, true));
 }
+
+void TestRefusesGameSource() {
+  printf("game sources are refused while brb_when_unfocused is set\n");
+  CHECK(settings::MonitorPrimaryRefusesGameSource(true, true));
+  CHECK(!settings::MonitorPrimaryRefusesGameSource(false, true));
+  CHECK(!settings::MonitorPrimaryRefusesGameSource(true, false));
+  CHECK(!settings::MonitorPrimaryRefusesGameSource(false, false));
+}
 }  // namespace
 
 int main(int, char**) {
@@ -90,6 +98,7 @@ int main(int, char**) {
   TestBrbFlag();
   TestMonitorPrimary();
   TestShowsMonitor();
+  TestRefusesGameSource();
 
   printf(failures ? "FAILED (%d)\n" : "ALL PASSED\n", failures);
   return failures ? 1 : 0;

@@ -109,6 +109,11 @@ bool IsMonitorPrimaryWithBrb(bool brb_when_unfocused,
 // monitor primary: show the monitor only while the game is in the
 // foreground and not minimized, otherwise show BRB
 bool MonitorPrimaryShowsMonitor(bool game_foreground, bool is_minimized);
+
+// a game source is never added while brb_when_unfocused is set: the game
+// branch would select BRB while the monitor (the desktop) stays on top
+bool MonitorPrimaryRefusesGameSource(bool brb_when_unfocused,
+                                     bool has_monitor);
 };
 
 #endif // ASCENTOBS_OBS_CONTROL_SETTINGS_H_

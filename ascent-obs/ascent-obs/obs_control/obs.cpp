@@ -579,7 +579,13 @@ bool OBS::InitScene(OBSData& scene_settings, OBSData& error_result) {
     scene_settings,
     settings::kSettingsSourceGame));
 
-  if (!capture_monitor || !monitor_source_->force()) {
+  bool refuse_game = settings::MonitorPrimaryRefusesGameSource(
+      monitor_brb_when_unfocused_, has_monitor_source());
+  if (refuse_game && game_source) {
+    blog(LOG_INFO, "monitor primary: ignoring game source");
+  }
+
+  if ((!capture_monitor || !monitor_source_->force()) && !refuse_game) {
     game_capture = InitGameSource(game_source,error_result,
                                   game_in_foreground, capture_window);
   }
@@ -679,6 +685,12 @@ bool OBS::AddGameSource(OBSData& game_settings) {
   libascentobs::CriticalSectionLock locker(sync_);
   if (monitor_source_.get() && monitor_source_->force()) {
     blog(LOG_INFO, "game source rejected: capture monitor only");
+    return false;
+  }
+
+  if (settings::MonitorPrimaryRefusesGameSource(monitor_brb_when_unfocused_,
+                                                has_monitor_source())) {
+    blog(LOG_INFO, "monitor primary: ignoring AddGameSource");
     return false;
   }
 

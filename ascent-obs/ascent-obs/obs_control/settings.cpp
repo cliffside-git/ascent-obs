@@ -184,6 +184,11 @@ bool settings::MonitorPrimaryShowsMonitor(bool game_foreground,
   return game_foreground && !is_minimized;
 }
 
+bool settings::MonitorPrimaryRefusesGameSource(bool brb_when_unfocused,
+                                               bool has_monitor) {
+  return brb_when_unfocused && has_monitor;
+}
+
 std::vector<std::string> settings::ParseTrackNames(
     obs_data_t* audio_extra_options,
     size_t max_tracks) {
