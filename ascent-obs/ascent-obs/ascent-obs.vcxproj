@@ -372,6 +372,7 @@ xcopy /Y  $(TargetPath) $(SolutionDir)runtime\bin\64bit</Command>
     <ClInclude Include="obs_control\obs_control.h" />
     <ClInclude Include="obs_control\stream_output.h" />
     <ClInclude Include="ascent_obs_logger.h" />
+    <ClInclude Include="command_framer.h" />
     <ClInclude Include="server.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="switches.h" />
