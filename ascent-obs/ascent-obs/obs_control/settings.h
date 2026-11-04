@@ -114,6 +114,24 @@ bool MonitorPrimaryShowsMonitor(bool game_foreground, bool is_minimized);
 // branch would select BRB while the monitor (the desktop) stays on top
 bool MonitorPrimaryRefusesGameSource(bool brb_when_unfocused,
                                      bool has_monitor);
+
+// what a START does about monitor-primary BRB mode (sources live across
+// STARTs in one recorder process)
+enum class MonitorPrimaryStart {
+  kProceed,  // build the scene as usual
+  kRelease,  // release the retained game/window source first
+  kRefuse,   // fail the START: it would mix modes on a running capture
+};
+
+// |requested|: this START's monitor payload is enabled with
+// brb_when_unfocused. |current_mode|: the mode the recorder is in now.
+// |has_retained_source|: a game or window source from an earlier START.
+// |output_active|: a recording, replay or stream is running (a START that
+// joins it can't change the sources).
+MonitorPrimaryStart DecideMonitorPrimaryStart(bool requested,
+                                              bool current_mode,
+                                              bool has_retained_source,
+                                              bool output_active);
 };
 
 #endif // ASCENTOBS_OBS_CONTROL_SETTINGS_H_

@@ -90,6 +90,35 @@ void TestRefusesGameSource() {
   CHECK(!settings::MonitorPrimaryRefusesGameSource(true, false));
   CHECK(!settings::MonitorPrimaryRefusesGameSource(false, false));
 }
+
+void TestStartDecision() {
+  using settings::DecideMonitorPrimaryStart;
+  using S = settings::MonitorPrimaryStart;
+  // (requested, current mode, retained game/window source, output active)
+  printf("no output running: retained sources are released for the mode\n");
+  CHECK(DecideMonitorPrimaryStart(true, false, true, false) == S::kRelease);
+  CHECK(DecideMonitorPrimaryStart(true, true, true, false) == S::kRelease);
+  CHECK(DecideMonitorPrimaryStart(true, false, false, false) == S::kProceed);
+  CHECK(DecideMonitorPrimaryStart(true, true, false, false) == S::kProceed);
+
+  printf("no output running, mode not requested: as before\n");
+  CHECK(DecideMonitorPrimaryStart(false, false, true, false) == S::kProceed);
+  CHECK(DecideMonitorPrimaryStart(false, false, false, false) == S::kProceed);
+  CHECK(DecideMonitorPrimaryStart(false, true, true, false) == S::kProceed);
+  CHECK(DecideMonitorPrimaryStart(false, true, false, false) == S::kProceed);
+
+  printf("joining a running capture: same mode proceeds\n");
+  CHECK(DecideMonitorPrimaryStart(true, true, false, true) == S::kProceed);
+  CHECK(DecideMonitorPrimaryStart(false, false, true, true) == S::kProceed);
+  CHECK(DecideMonitorPrimaryStart(false, false, false, true) == S::kProceed);
+
+  printf("joining a running capture: mixing modes is refused\n");
+  CHECK(DecideMonitorPrimaryStart(true, true, true, true) == S::kRefuse);
+  CHECK(DecideMonitorPrimaryStart(true, false, true, true) == S::kRefuse);
+  CHECK(DecideMonitorPrimaryStart(true, false, false, true) == S::kRefuse);
+  CHECK(DecideMonitorPrimaryStart(false, true, false, true) == S::kRefuse);
+  CHECK(DecideMonitorPrimaryStart(false, true, true, true) == S::kRefuse);
+}
 }  // namespace
 
 int main(int, char**) {
@@ -99,6 +128,7 @@ int main(int, char**) {
   TestMonitorPrimary();
   TestShowsMonitor();
   TestRefusesGameSource();
+  TestStartDecision();
 
   printf(failures ? "FAILED (%d)\n" : "ALL PASSED\n", failures);
   return failures ? 1 : 0;

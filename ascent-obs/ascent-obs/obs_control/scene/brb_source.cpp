@@ -130,6 +130,19 @@ void BRBSource::UpdateImagePosition() {
   blog(LOG_INFO, "update BRB image position: [x:%d y:%d]", (int)pos.x, (int)pos.y);
 }
 
+void BRBSource::RemoveFromScene() {
+  SetVisible(false);
+  if (background_scene_item_) {
+    obs_sceneitem_remove(background_scene_item_);
+    background_scene_item_ = nullptr;
+  }
+
+  if (source_item_) {
+    obs_sceneitem_remove(source_item_);
+    source_item_ = nullptr;
+  }
+}
+
 void BRBSource::SetVisible(bool visible) {
   __super::SetVisible(visible);
 

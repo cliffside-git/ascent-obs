@@ -189,6 +189,25 @@ bool settings::MonitorPrimaryRefusesGameSource(bool brb_when_unfocused,
   return brb_when_unfocused && has_monitor;
 }
 
+settings::MonitorPrimaryStart settings::DecideMonitorPrimaryStart(
+    bool requested,
+    bool current_mode,
+    bool has_retained_source,
+    bool output_active) {
+  if (output_active) {
+    if (requested != current_mode || (requested && has_retained_source)) {
+      return MonitorPrimaryStart::kRefuse;
+    }
+    return MonitorPrimaryStart::kProceed;
+  }
+
+  if (requested && has_retained_source) {
+    return MonitorPrimaryStart::kRelease;
+  }
+
+  return MonitorPrimaryStart::kProceed;
+}
+
 std::vector<std::string> settings::ParseTrackNames(
     obs_data_t* audio_extra_options,
     size_t max_tracks) {
