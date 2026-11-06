@@ -20,6 +20,8 @@ const char kSettingsSourceMonitor[] = "monitor";
 const char kSettingsSourceWindowCapture[] = "window_capture"; 
 const char kSettingsSourceGame[] = "game";
 const char kSettingsSourceBRB[] = "brb";
+const char kSettingsMonitorMethod[] = "method";
+const char kSettingsMonitorBrbWhenUnfocused[] = "brb_when_unfocused";
 const char kSettingsSourceAux[] = "auxSources";
 const char kSettingsSourceTobii[] = "tobii";
 const char kSettingsForeground[] = "foreground";
@@ -151,6 +153,59 @@ bool settings::GetAudioExtraParam(OBSData& audio_settings, const char *name) {
     audio_settings, settings::kSettingsExtraOptions));
 
   return obs_data_get_bool(audio_extra_options, name);
+}
+
+int settings::ParseMonitorCaptureMethod(obs_data_t* monitor_settings) {
+  const long long kMethodAuto = 0;
+  const long long kMethodMax = 2;  // METHOD_WGC
+  long long method = obs_data_get_int(monitor_settings, kSettingsMonitorMethod);
+  if (method < kMethodAuto || method > kMethodMax) {
+    blog(LOG_WARNING, "invalid monitor capture method %lld, using auto (0)",
+         method);
+    return (int)kMethodAuto;
+  }
+
+  return (int)method;
+}
+
+bool settings::ParseMonitorBrbWhenUnfocused(obs_data_t* monitor_settings) {
+  return obs_data_get_bool(monitor_settings, kSettingsMonitorBrbWhenUnfocused);
+}
+
+bool settings::IsMonitorPrimaryWithBrb(bool brb_when_unfocused,
+                                       bool has_monitor,
+                                       bool has_game,
+                                       bool has_window) {
+  return brb_when_unfocused && has_monitor && !has_game && !has_window;
+}
+
+bool settings::MonitorPrimaryShowsMonitor(bool game_foreground,
+                                          bool is_minimized) {
+  return game_foreground && !is_minimized;
+}
+
+bool settings::MonitorPrimaryRefusesGameSource(bool brb_when_unfocused,
+                                               bool has_monitor) {
+  return brb_when_unfocused && has_monitor;
+}
+
+settings::MonitorPrimaryStart settings::DecideMonitorPrimaryStart(
+    bool requested,
+    bool current_mode,
+    bool has_retained_source,
+    bool output_active) {
+  if (output_active) {
+    if (requested != current_mode || (requested && has_retained_source)) {
+      return MonitorPrimaryStart::kRefuse;
+    }
+    return MonitorPrimaryStart::kProceed;
+  }
+
+  if (requested && has_retained_source) {
+    return MonitorPrimaryStart::kRelease;
+  }
+
+  return MonitorPrimaryStart::kProceed;
 }
 
 std::vector<std::string> settings::ParseTrackNames(

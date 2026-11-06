@@ -1,4 +1,5 @@
 #include "obs_control/scene/monitor_source.h"
+#include "obs_control/settings.h"
 #include <map>
 #include <windows.h>
 
@@ -64,6 +65,11 @@ bool MonitorSource::Create(OBSData& data, obs_scene_t* scene,
   force_ = obs_data_get_bool(data, kSettingForce);
   cursor_ = obs_data_get_bool(data, kSettingCursor);
 
+  method_ = settings::ParseMonitorCaptureMethod(data);
+  brb_when_unfocused_ = settings::ParseMonitorBrbWhenUnfocused(data);
+  blog(LOG_INFO, "monitor capture method: %d brb_when_unfocused: %d", method_,
+       brb_when_unfocused_);
+
   monitor_index_ = 0;
   monitor_handle_ = (uint32_t)obs_data_get_int(data, kSettingMonitorHandle);
 
@@ -114,7 +120,7 @@ bool MonitorSource::CreateMonitorsSource(obs_scene_t* scene,
   obs_data_set_int(moitor_settings, "monitor_index", monitor_index_);
   obs_data_set_bool(moitor_settings, "capture_cursor", cursor_); 
   // METHOD_AUTO = 0, METHOD_DXGI = 1, METHOD_WGC =2
-  obs_data_set_int(moitor_settings, "method", 0); 
+  obs_data_set_int(moitor_settings, "method", method_);
 
   source_.reset(new SourceContext(obs_source_create(
       !compatible ?"monitor_capture" :"monitor_capture_low",

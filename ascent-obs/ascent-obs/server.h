@@ -8,6 +8,7 @@
 #include <communications/communication_channel_delegate.h>
 #include "obs_control/obs_control.h"
 #include "message_loop.h"
+#include "command_framer.h"
 
 //-----------------------------------------------------------------------------
 
@@ -44,12 +45,16 @@ private:
   bool Init(CommandLine* options);
   void Run();
   bool HandleShutdownCommand(int command);
+  // returns false after a shutdown command (stop dispatching)
+  bool DispatchCommand(const std::string& buffer);
 
 private:
 
   std::unique_ptr<libascentobs::ICommunicationChannel> communications_;
   MessageLoop message_loop_;
   std::unique_ptr<obs_control::OBSControl> obs_control_;
+  // OnData is called from the channel's single reader thread only
+  CommandFramer framer_;
 
   DISALLOW_COPY_AND_ASSIGN(Server);
 };

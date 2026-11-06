@@ -18,6 +18,9 @@ public:
   };
 
   virtual void SetVisible(bool visible);
+
+  // hides the BRB and removes its items from the scene
+  void RemoveFromScene();
   virtual bool UpdateImage(const char* image_file_path);
 
   void Update(OBSData& data);

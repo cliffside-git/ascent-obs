@@ -84,9 +84,32 @@ void Server::OnDisconnected() {
 //-----------------------------------------------------------------------------
 // virtual
 void Server::OnData(const uint8_t* data, size_t size) {
+  std::vector<std::string> commands;
+  CommandFramer::Result result = CommandFramer::Result::kOk;
   try {
-    std::string buffer((const char*)data, ((const char*)data) + size);
+    result = framer_.Feed((const char*)data, size, &commands);
+  } catch (...) {
+    blog(LOG_ERROR, "failed reading commands");
+    return;
+  }
 
+  if (result == CommandFramer::Result::kOverflow) {
+    blog(LOG_WARNING, "dropped a command without newline over %zu bytes",
+         CommandFramer::kMaxPendingBytes);
+  } else if (result == CommandFramer::Result::kGarbage) {
+    blog(LOG_WARNING, "dropped unterminated data that isn't a command");
+  }
+
+  for (const auto& command : commands) {
+    if (!DispatchCommand(command)) {
+      return;
+    }
+  }
+}
+
+//-----------------------------------------------------------------------------
+bool Server::DispatchCommand(const std::string& buffer) {
+  try {
     DEBUG_PRINT("Server OnData\n", buffer.c_str());
 
 #if _DEBUG
@@ -96,7 +119,7 @@ void Server::OnData(const uint8_t* data, size_t size) {
     CREATE_OBS_DATA(request);
     request = obs_data_create_from_json(buffer.c_str());
     if (!obs_data_has_user_value(request, protocol::kCommandField)) {
-      return;
+      return true;
     }
 
     int identifier = 0;
@@ -106,12 +129,13 @@ void Server::OnData(const uint8_t* data, size_t size) {
 
     int command = (int)obs_data_get_int(request, protocol::kCommandField);
     if (HandleShutdownCommand(command)) {
-      return;
+      return false;
     }
 
     obs_control_->HandleCommand(command, identifier, request);
   } catch (...) {
   }
+  return true;
 }
 
 //-----------------------------------------------------------------------------

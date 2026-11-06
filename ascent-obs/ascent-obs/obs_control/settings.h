@@ -36,6 +36,8 @@ extern const char kSettingsSourceGame[];
 extern const char kSettingsReplay[];
 extern const char kSettingsStreaming[];
 extern const char kSettingsSourceBRB[];
+extern const char kSettingsMonitorMethod[];
+extern const char kSettingsMonitorBrbWhenUnfocused[];
 extern const char kSettingsSourceAux[];
 extern const char kSettingsSourceTobii[];
 extern const char kSettingsForeground[];
@@ -89,6 +91,47 @@ enum AudioTracksFlags : uint32_t {
 };
 
 int GetSupportedAudioTracksCount(const uint32_t& tracks);
+
+// monitor payload 'method': OBS monitor_capture method (0 auto, 1 DXGI,
+// 2 WGC). Absent gives 0; out of range logs a warning and gives 0.
+int ParseMonitorCaptureMethod(obs_data_t* monitor_settings);
+
+// monitor payload 'brb_when_unfocused', absent = false
+bool ParseMonitorBrbWhenUnfocused(obs_data_t* monitor_settings);
+
+// BRB replaces the monitor while the game is unfocused only when the
+// monitor is the sole capture: no game and no window source
+bool IsMonitorPrimaryWithBrb(bool brb_when_unfocused,
+                             bool has_monitor,
+                             bool has_game,
+                             bool has_window);
+
+// monitor primary: show the monitor only while the game is in the
+// foreground and not minimized, otherwise show BRB
+bool MonitorPrimaryShowsMonitor(bool game_foreground, bool is_minimized);
+
+// a game source is never added while brb_when_unfocused is set: the game
+// branch would select BRB while the monitor (the desktop) stays on top
+bool MonitorPrimaryRefusesGameSource(bool brb_when_unfocused,
+                                     bool has_monitor);
+
+// what a START does about monitor-primary BRB mode (sources live across
+// STARTs in one recorder process)
+enum class MonitorPrimaryStart {
+  kProceed,  // build the scene as usual
+  kRelease,  // release the retained game/window source first
+  kRefuse,   // fail the START: it would mix modes on a running capture
+};
+
+// |requested|: this START's monitor payload is enabled with
+// brb_when_unfocused. |current_mode|: the mode the recorder is in now.
+// |has_retained_source|: a game or window source from an earlier START.
+// |output_active|: a recording, replay or stream is running (a START that
+// joins it can't change the sources).
+MonitorPrimaryStart DecideMonitorPrimaryStart(bool requested,
+                                              bool current_mode,
+                                              bool has_retained_source,
+                                              bool output_active);
 };
 
 #endif // ASCENTOBS_OBS_CONTROL_SETTINGS_H_
