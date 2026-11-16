@@ -60,6 +60,7 @@ static HANDLE shmem_file_handle = 0;
 static struct thread_data thread_data = {0};
 
 volatile bool active = false;
+bool dxgi_owns_capture = false;
 struct hook_info *global_hook_info = NULL;
 
 extern bool was_init = false;
@@ -640,6 +641,7 @@ bool capture_init_shtex(struct shtex_data **data, HWND window, uint32_t cx,
 	}
 
 	active = true;
+	dxgi_owns_capture = dxgi_capturing > 0;
 	return true;
 }
 
@@ -841,6 +843,7 @@ bool capture_init_shmem(struct shmem_data **data, HWND window, uint32_t cx,
 	}
 
 	active = true;
+	dxgi_owns_capture = dxgi_capturing > 0;
 	return true;
 }
 
@@ -881,6 +884,7 @@ void capture_free(void)
 
 	SetEvent(signal_restart);
 	active = false;
+	dxgi_owns_capture = false;
 }
 
 #define HOOK_NAME L"ascent_graphics_hook_dup_mutex"

@@ -79,6 +79,10 @@ static bool nv_capture_available = false;
 static struct gl_data data = {0};
 __declspec(thread) static int swap_recurse;
 
+/* The NVIDIA driver can present GL frames through DXGI. The DXGI hooks read
+ * this to keep those presents away from a capture DXGI does not own. */
+__declspec(thread) int gl_presenting;
+
 static inline bool gl_error(const char *func, const char *str)
 {
 	GLenum error = glGetError();
@@ -768,6 +772,8 @@ static void gl_capture(HDC hdc)
 
 static inline void gl_swap_begin(HDC hdc)
 {
+	++gl_presenting;
+
 	const bool first = swap_recurse == 0;
 	++swap_recurse;
 
@@ -782,6 +788,8 @@ static inline void gl_swap_end(HDC hdc)
 
 	if (first && global_hook_info->capture_overlay)
 		gl_capture(hdc);
+
+	--gl_presenting;
 }
 
 static BOOL WINAPI hook_swap_buffers(HDC hdc)
