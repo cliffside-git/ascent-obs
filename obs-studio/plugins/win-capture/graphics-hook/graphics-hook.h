@@ -157,6 +157,9 @@ extern char process_name[MAX_PATH];
 extern wchar_t keepalive_name[64];
 extern HWND dummy_window;
 extern volatile bool active;
+/* Set when a DXGI Present initialized the active capture. */
+extern bool dxgi_owns_capture;
+extern __declspec(thread) int dxgi_capturing;
 
 static inline const char *get_process_name(void)
 {
@@ -301,6 +304,7 @@ static inline bool capture_should_init(void)
 	return should_init;
 }
 
+extern __declspec(thread) int gl_presenting;
 #if COMPILE_VULKAN_HOOK
 extern __declspec(thread) int vk_presenting;
 #endif

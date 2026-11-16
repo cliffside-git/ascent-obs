@@ -195,13 +195,30 @@ static void update_mismatch_count(bool match)
 	}
 }
 
+__declspec(thread) int dxgi_capturing = 0;
+
+static void capture_backbuffer(IDXGISwapChain *swap, IUnknown *backbuffer)
+{
+	++dxgi_capturing;
+	data.capture(swap, backbuffer);
+	--dxgi_capturing;
+}
+
+/* The NVIDIA driver can present GL frames through DXGI. DXGI must not adopt
+ * or capture those unless it already owns the capture. */
+static bool dxgi_passthrough()
+{
+	return should_passthrough() ||
+	       (gl_presenting > 0 && !dxgi_owns_capture);
+}
+
 static HRESULT STDMETHODCALLTYPE hook_present(IDXGISwapChain *swap,
 					      UINT sync_interval, UINT flags)
 {
-	if (should_passthrough()) {
-		dxgi_presenting = true;
+	if (dxgi_passthrough()) {
+		++dxgi_presenting;
 		const HRESULT hr = RealPresent(swap, sync_interval, flags);
-		dxgi_presenting = false;
+		--dxgi_presenting;
 		return hr;
 	}
 
@@ -225,7 +242,7 @@ static HRESULT STDMETHODCALLTYPE hook_present(IDXGISwapChain *swap,
 		IUnknown *backbuffer = get_dxgi_backbuffer(swap);
 
 		if (backbuffer) {
-			data.capture(swap, backbuffer);
+			capture_backbuffer(swap, backbuffer);
 			backbuffer->Release();
 		}
 	}
@@ -249,7 +266,7 @@ static HRESULT STDMETHODCALLTYPE hook_present(IDXGISwapChain *swap,
 			IUnknown *backbuffer = get_dxgi_backbuffer(swap);
 
 			if (backbuffer) {
-				data.capture(swap, backbuffer);
+				capture_backbuffer(swap, backbuffer);
 				backbuffer->Release();
 			}
 		}
@@ -262,11 +279,11 @@ static HRESULT STDMETHODCALLTYPE
 hook_present1(IDXGISwapChain1 *swap, UINT sync_interval, UINT flags,
 	      const DXGI_PRESENT_PARAMETERS *params)
 {
-	if (should_passthrough()) {
-		dxgi_presenting = true;
+	if (dxgi_passthrough()) {
+		++dxgi_presenting;
 		const HRESULT hr =
 			RealPresent1(swap, sync_interval, flags, params);
-		dxgi_presenting = false;
+		--dxgi_presenting;
 		return hr;
 	}
 
@@ -290,7 +307,7 @@ hook_present1(IDXGISwapChain1 *swap, UINT sync_interval, UINT flags,
 		IUnknown *backbuffer = get_dxgi_backbuffer(swap);
 
 		if (backbuffer) {
-			data.capture(swap, backbuffer);
+			capture_backbuffer(swap, backbuffer);
 			backbuffer->Release();
 		}
 	}
@@ -307,7 +324,7 @@ hook_present1(IDXGISwapChain1 *swap, UINT sync_interval, UINT flags,
 			IUnknown *backbuffer = get_dxgi_backbuffer(swap);
 
 			if (backbuffer) {
-				data.capture(swap, backbuffer);
+				capture_backbuffer(swap, backbuffer);
 				backbuffer->Release();
 			}
 		}
