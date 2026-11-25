@@ -99,6 +99,24 @@ int ParseMonitorCaptureMethod(obs_data_t* monitor_settings);
 // monitor payload 'brb_when_unfocused', absent = false
 bool ParseMonitorBrbWhenUnfocused(obs_data_t* monitor_settings);
 
+extern const char kSettingsMonitorFollowWindow[];
+
+// monitor payload 'follow_window': the game window's HWND as an integer.
+// Absent, 0, not an integer, negative or above 32 bits give 0 (off); the
+// invalid ones log a warning.
+uint64_t ParseMonitorFollowWindow(obs_data_t* monitor_settings);
+
+// follow-window mode runs only for a window on the DXGI method in
+// monitor-primary BRB mode (the only way the desktop sends it); any other
+// combination ignores the window and records as before
+bool FollowWindowActive(uint64_t follow_window, int method,
+                        bool brb_when_unfocused);
+
+// the settings the monitor source gives OBS's monitor_capture. Follow-window
+// mode adds nothing here: it is a filter on top of the same source.
+void FillMonitorCaptureSettings(obs_data_t* out, uint32_t monitor_handle,
+                                int monitor_index, bool cursor, int method);
+
 // BRB replaces the monitor while the game is unfocused only when the
 // monitor is the sole capture: no game and no window source
 bool IsMonitorPrimaryWithBrb(bool brb_when_unfocused,

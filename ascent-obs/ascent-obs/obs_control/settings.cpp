@@ -22,6 +22,7 @@ const char kSettingsSourceGame[] = "game";
 const char kSettingsSourceBRB[] = "brb";
 const char kSettingsMonitorMethod[] = "method";
 const char kSettingsMonitorBrbWhenUnfocused[] = "brb_when_unfocused";
+const char kSettingsMonitorFollowWindow[] = "follow_window";
 const char kSettingsSourceAux[] = "auxSources";
 const char kSettingsSourceTobii[] = "tobii";
 const char kSettingsForeground[] = "foreground";
@@ -170,6 +171,31 @@ int settings::ParseMonitorCaptureMethod(obs_data_t* monitor_settings) {
 
 bool settings::ParseMonitorBrbWhenUnfocused(obs_data_t* monitor_settings) {
   return obs_data_get_bool(monitor_settings, kSettingsMonitorBrbWhenUnfocused);
+}
+
+uint64_t settings::ParseMonitorFollowWindow(obs_data_t* monitor_settings) {
+  UNUSED_PARAMETER(monitor_settings);
+  return 0;  // STUB
+}
+
+bool settings::FollowWindowActive(uint64_t follow_window, int method,
+                                  bool brb_when_unfocused) {
+  UNUSED_PARAMETER(follow_window);
+  UNUSED_PARAMETER(method);
+  UNUSED_PARAMETER(brb_when_unfocused);
+  return false;  // STUB
+}
+
+void settings::FillMonitorCaptureSettings(obs_data_t* out,
+                                          uint32_t monitor_handle,
+                                          int monitor_index, bool cursor,
+                                          int method) {
+  UNUSED_PARAMETER(out);
+  UNUSED_PARAMETER(monitor_handle);
+  UNUSED_PARAMETER(monitor_index);
+  UNUSED_PARAMETER(cursor);
+  UNUSED_PARAMETER(method);
+  // STUB
 }
 
 bool settings::IsMonitorPrimaryWithBrb(bool brb_when_unfocused,
