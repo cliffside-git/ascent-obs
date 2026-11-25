@@ -350,7 +350,7 @@ void TestSettle() {
   f.now_ns += 50 * kMs;
   CHECK(Decide(f, sf).show_game);
 
-  printf("rule 5: a render gap (source hidden by the desktop's BRB) settles\n");
+  printf("rule 5: a long render gap (2 s) settles\n");
   GuardInputs g = Good(10000 * kMs);
   SettleState sg = Settled(g);
   g.now_ns += 2000 * kMs;  // not rendered for 2 s, inputs look the same
@@ -363,6 +363,28 @@ void TestSettle() {
   SettleState sh = Settled(h);
   h.now_ns += 33 * kMs;
   CHECK(Decide(h, sh).show_game);
+  printf("rule 5: render lag (VM r1 at 150%%: 57%% lagged frames) does not "
+         "settle on its own\n");
+  bool lag_ok = true;
+  for (int i = 0; i < 20; i++) {
+    h.now_ns += (i % 2 ? 66 : 133) * kMs;  // frames 66-133 ms apart
+    if (!Decide(h, sh).show_game) {
+      lag_ok = false;
+    }
+  }
+  CHECK(lag_ok);
+  printf("rule 5: the source was hidden since the last frame (desktop BRB "
+         "shown and back) -> settle\n");
+  GuardInputs r = Good(10000 * kMs);
+  SettleState sr = Settled(r);
+  r.now_ns += 33 * kMs;
+  r.reshown = true;
+  GuardDecision dr = Decide(r, sr);
+  CHECK(!dr.show_game && dr.reason == Reason::kSettling);
+  r.reshown = false;
+  uint64_t reshown_at = r.now_ns;
+  CHECK(!StepTo(r, sr, reshown_at + 99 * kMs).show_game);
+  CHECK(StepTo(r, sr, reshown_at + 100 * kMs).show_game);
   printf("rule 5: a clock going backwards settles\n");
   GuardInputs b = Good(10000 * kMs);
   SettleState sb = Settled(b);

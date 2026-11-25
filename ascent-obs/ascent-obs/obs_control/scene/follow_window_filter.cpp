@@ -32,6 +32,7 @@ struct Filter {
   // graphics thread only
   Probe pre;
   bool have_pre = false;
+  bool hidden_since_render = false;
   SettleState settle;
   bool logged = false;
   Reason last_reason = Reason::kGame;
@@ -93,6 +94,12 @@ void OnTick(void* data, float seconds) {
   Filter* f = static_cast<Filter*>(data);
   f->pre = f->facts.ReadBeforeAcquire();
   f->have_pre = true;
+  // the duplicator stops while its source isn't showing (the desktop's
+  // focus BRB is up); the render then settles before trusting it again
+  obs_source_t* parent = obs_filter_get_parent(f->self);
+  if (parent && !obs_source_showing(parent)) {
+    f->hidden_since_render = true;
+  }
   if (f->pre.adopted) {
     blog(LOG_INFO, "follow-window: window gone, following 0x%llx (same pid %u)",
          (unsigned long long)f->pre.target, f->facts.game_pid());
@@ -201,6 +208,8 @@ void Render(void* data, gs_effect_t* effect) {
     in.rect_before_acquire = f->pre.client;
     in.rect_at_render =
         f->pre.window_alive ? f->facts.ReadClientRect(f->pre.target) : Rect();
+    in.reshown = f->hidden_since_render;
+    f->hidden_since_render = false;
     in.now_ns = os_gettime_ns();
     d = Decide(in, f->settle);
   }

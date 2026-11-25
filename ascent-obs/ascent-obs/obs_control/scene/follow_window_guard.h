@@ -161,6 +161,10 @@ struct GuardInputs {
   Rect monitor;                     // the recorded monitor, screen px
   Rect rect_before_acquire;         // rule 4, read before the duplicator tick
   Rect rect_at_render;              // rule 4, read in the render
+  // rule 5: the source was hidden (not showing) at some tick since the last
+  // decision, e.g. the desktop's focus BRB was up: the duplicator restarted
+  // and its first frames may be stale
+  bool reshown = false;
   uint64_t now_ns = 0;
 };
 
@@ -172,10 +176,11 @@ struct GuardDecision {
 
 // rule 5: BRB for this long after any input changes
 const uint64_t kSettleNs = 100000000ull;  // 100 ms
-// no decision for this long (the source wasn't rendered: hidden by the
-// desktop's focus BRB) counts as a change, so a re-shown source settles
-// first: the duplicator restarts and its first frames may be stale
-const uint64_t kRenderGapNs = 50000000ull;  // 50 ms
+// no decision for this long counts as a change. A hidden source is caught
+// by GuardInputs::reshown; this only backs it up, so it sits well above
+// render lag (VM r1 at 150% had 57% lagged frames, gaps of 66-133 ms, and a
+// 50 ms limit kept moves on BRB for 11 s)
+const uint64_t kRenderGapNs = 1000000000ull;  // 1 s
 
 struct SettleState {
   bool primed = false;
@@ -201,7 +206,7 @@ inline GuardDecision Decide(const GuardInputs& in, SettleState& settle) {
       settle.foreground_is_game != in.foreground_is_game ||
       settle.occluded != in.occluded || settle.on_monitor != on_monitor ||
       settle.rect != in.rect_before_acquire ||
-      in.now_ns < settle.last_seen_ns ||
+      in.reshown || in.now_ns < settle.last_seen_ns ||
       in.now_ns - settle.last_seen_ns > kRenderGapNs;
   if (changed) {
     settle.last_change_ns = in.now_ns;
