@@ -112,6 +112,35 @@ uint64_t ParseMonitorFollowWindow(obs_data_t* monitor_settings);
 bool FollowWindowActive(uint64_t follow_window, int method,
                         bool brb_when_unfocused);
 
+// What a monitor source records with, as its START payload asked. A
+// compatibility fallback rebuilds the source from this whole struct, so it
+// keeps following the window with the same cursor and BRB mode.
+struct MonitorConfig {
+  bool cursor = false;
+  int method = 0;
+  bool brb_when_unfocused = false;
+  uint64_t follow_window = 0;
+};
+
+// cursor, method, brb_when_unfocused and follow_window of a monitor payload
+MonitorConfig ParseMonitorConfig(obs_data_t* monitor_settings);
+
+bool FollowWindowActive(const MonitorConfig& config);
+
+// What a later START does to a monitor source that is already running.
+enum class LaterStart {
+  kKeep,            // nothing changes
+  kRetarget,        // the guard follows the new window (updated in place)
+  kRebuildGuarded,  // an unguarded source must become guarded: rebuild it
+                    // with the guard attached before it is shown
+};
+
+// |guarded|: the running source has its follow-window guard. A guard is
+// never dropped by a later START: a payload without a usable follow_window
+// keeps following the window it follows now.
+LaterStart ReconcileLaterStart(const MonitorConfig& running, bool guarded,
+                               const MonitorConfig& requested);
+
 // the settings the monitor source gives OBS's monitor_capture. Follow-window
 // mode adds nothing here: it is a filter on top of the same source.
 void FillMonitorCaptureSettings(obs_data_t* out, uint32_t monitor_handle,

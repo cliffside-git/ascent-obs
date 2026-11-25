@@ -93,14 +93,17 @@ inline int FirstOccluder(uint32_t game_pid, const Rect& game_client,
 }
 
 // ---------------------------------------------------------------------------
-// Rule 7: the followed window is gone.
+// Rule 7: the followed window is gone or draws nothing.
 
 struct TargetFacts {
-  uint64_t target = 0;         // the HWND we follow now
-  bool target_alive = false;   // IsWindow(target) and its pid is game_pid
-  uint32_t game_pid = 0;       // pid of the HWND the START named
-  uint64_t foreground = 0;     // GetForegroundWindow()
+  uint64_t target = 0;          // the HWND we follow now
+  bool target_alive = false;    // IsWindow(target) and its pid is game_pid
+  // visible, not cloaked, not minimized: its client rect shows its pixels
+  bool target_drawable = false;
+  uint32_t game_pid = 0;        // pid of the HWND the START named
+  uint64_t foreground = 0;      // GetForegroundWindow()
   uint32_t foreground_pid = 0;
+  bool foreground_drawable = false;
 };
 
 struct TargetResolution {
@@ -109,7 +112,11 @@ struct TargetResolution {
   bool gone = false;    // nothing to follow: BRB
 };
 
+// Keep a live, drawable target. Otherwise (destroyed, hidden, cloaked,
+// minimized) adopt the foreground window when it is a drawable window of the
+// game's pid; else nothing to follow.
 inline TargetResolution ResolveTarget(const TargetFacts& f) {
+  // STUB (tests first): 1.4.0-pre rule, drawability not checked yet
   TargetResolution r;
   if (f.target != 0 && f.target_alive) {
     r.target = f.target;
@@ -128,43 +135,78 @@ inline TargetResolution ResolveTarget(const TargetFacts& f) {
 // ---------------------------------------------------------------------------
 // The per-frame decision.
 
+// Everything the guard reads about the followed window at one moment. It is
+// read twice per frame: before the duplicator acquires and again at render.
+struct Snapshot {
+  // every read finished; false (a z-order walk cut short, a window that
+  // vanished mid-read) means unknown, which is BRB
+  bool complete = false;
+  uint64_t target = 0;              // the window followed
+  bool window_alive = false;        // rule 7, after ResolveTarget
+  bool foreground_is_game = false;  // rule 1
+  bool occluded = false;            // rule 2
+  Rect client;                      // the target's client rect, screen px
+  Rect monitor;                     // the recorded monitor, screen px
+
+  bool operator==(const Snapshot& o) const {
+    return complete == o.complete && target == o.target &&
+           window_alive == o.window_alive &&
+           foreground_is_game == o.foreground_is_game &&
+           occluded == o.occluded && client == o.client &&
+           monitor == o.monitor;
+  }
+  bool operator!=(const Snapshot& o) const { return !(*this == o); }
+};
+
+// What the capture holds right now (rule 8: frame provenance).
+struct FrameFacts {
+  bool valid = false;       // the capture holds an image
+  // when the desktop image it holds was updated, os_gettime_ns clock; a
+  // pointer-only update doesn't count. 0: never
+  uint64_t present_ns = 0;
+  Rect area;                // what the image covers, screen px
+};
+
 enum class Reason {
   kGame = 0,
-  kWindowGone,        // rule 7
-  kDesktopUnfocused,  // rule 6 (CMD_GAME_FOCUS_CHANGED)
-  kNotForeground,     // rule 1
-  kOccluded,          // rule 2
-  kOffMonitor,        // rule 3
-  kRectMoved,         // rule 4
-  kSettling,          // rule 5
+  kUnknown,              // rule 8: a read didn't finish
+  kWindowGone,           // rule 7
+  kDesktopUnfocused,     // rule 6 (CMD_GAME_FOCUS_CHANGED)
+  kNotForeground,        // rule 1
+  kOccluded,             // rule 2
+  kOffMonitor,           // rule 3
+  kChangedSinceAcquire,  // rules 4 and 9
+  kSettling,             // rule 5
+  kCaptureMismatch,      // rule 8: the image isn't the monitor
+  kStaleFrame,           // rule 8: no new desktop image since the change
 };
 
 inline const char* ReasonName(Reason r) {
   switch (r) {
     case Reason::kGame: return "game";
-    case Reason::kWindowGone: return "window gone";
+    case Reason::kUnknown: return "unknown (a window read did not finish)";
+    case Reason::kWindowGone: return "window gone or not drawable";
     case Reason::kDesktopUnfocused: return "desktop says unfocused";
     case Reason::kNotForeground: return "not foreground";
     case Reason::kOccluded: return "occluded";
     case Reason::kOffMonitor: return "not fully on the monitor";
-    case Reason::kRectMoved: return "rect changed since acquire";
+    case Reason::kChangedSinceAcquire: return "changed since acquire";
     case Reason::kSettling: return "settling";
+    case Reason::kCaptureMismatch: return "capture does not match the monitor";
+    case Reason::kStaleFrame: return "no new desktop frame since the change";
   }
   return "?";
 }
 
 struct GuardInputs {
-  bool window_alive = false;        // rule 7, after ResolveTarget
-  bool desktop_front = false;       // rule 6
-  bool foreground_is_game = false;  // rule 1
-  bool occluded = false;            // rule 2
-  Rect monitor;                     // the recorded monitor, screen px
-  Rect rect_before_acquire;         // rule 4, read before the duplicator tick
-  Rect rect_at_render;              // rule 4, read in the render
+  Snapshot pre;     // read before the duplicator acquires this frame
+  Snapshot render;  // read again at render
+  bool desktop_front = false;  // rule 6
   // rule 5: the source was hidden (not showing) at some tick since the last
   // decision, e.g. the desktop's focus BRB was up: the duplicator restarted
   // and its first frames may be stale
   bool reshown = false;
+  FrameFacts frame;  // rule 8
   uint64_t now_ns = 0;
 };
 
@@ -184,12 +226,10 @@ const uint64_t kRenderGapNs = 1000000000ull;  // 1 s
 
 struct SettleState {
   bool primed = false;
-  bool window_alive = false;
+  Snapshot last;  // the render snapshot of the last decision
   bool desktop_front = false;
-  bool foreground_is_game = false;
-  bool occluded = false;
-  bool on_monitor = false;
-  Rect rect;
+  bool frame_valid = false;
+  Rect frame_area;
   uint64_t last_change_ns = 0;
   uint64_t last_seen_ns = 0;
 };
@@ -197,51 +237,51 @@ struct SettleState {
 // Show BRB when any rule holds, else the monitor cropped to the client rect.
 // Updates |settle| (call once per rendered frame).
 inline GuardDecision Decide(const GuardInputs& in, SettleState& settle) {
-  const bool on_monitor = Inside(in.rect_before_acquire, in.monitor) &&
-                          Inside(in.rect_at_render, in.monitor);
-
+  // STUB (tests first): the ddbe2c6 rule on the new inputs. Only the
+  // pre-acquire read counts (plus the render rect); completeness and the
+  // frame are ignored.
+  const Snapshot& pre = in.pre;
+  const bool on_monitor = Inside(pre.client, pre.monitor) &&
+                          Inside(in.render.client, pre.monitor);
   const bool changed =
-      !settle.primed || settle.window_alive != in.window_alive ||
+      !settle.primed || settle.last.window_alive != pre.window_alive ||
       settle.desktop_front != in.desktop_front ||
-      settle.foreground_is_game != in.foreground_is_game ||
-      settle.occluded != in.occluded || settle.on_monitor != on_monitor ||
-      settle.rect != in.rect_before_acquire ||
-      in.reshown || in.now_ns < settle.last_seen_ns ||
+      settle.last.foreground_is_game != pre.foreground_is_game ||
+      settle.last.occluded != pre.occluded ||
+      Inside(settle.last.client, settle.last.monitor) != on_monitor ||
+      settle.last.client != pre.client || in.reshown ||
+      in.now_ns < settle.last_seen_ns ||
       in.now_ns - settle.last_seen_ns > kRenderGapNs;
   if (changed) {
     settle.last_change_ns = in.now_ns;
   }
   settle.primed = true;
-  settle.window_alive = in.window_alive;
+  settle.last = pre;
   settle.desktop_front = in.desktop_front;
-  settle.foreground_is_game = in.foreground_is_game;
-  settle.occluded = in.occluded;
-  settle.on_monitor = on_monitor;
-  settle.rect = in.rect_before_acquire;
   settle.last_seen_ns = in.now_ns;
 
   GuardDecision d;
-  if (!in.window_alive) {
+  if (!pre.window_alive) {
     d.reason = Reason::kWindowGone;
   } else if (!in.desktop_front) {
     d.reason = Reason::kDesktopUnfocused;
-  } else if (!in.foreground_is_game) {
+  } else if (!pre.foreground_is_game) {
     d.reason = Reason::kNotForeground;
-  } else if (in.occluded) {
+  } else if (pre.occluded) {
     d.reason = Reason::kOccluded;
   } else if (!on_monitor) {
     d.reason = Reason::kOffMonitor;
-  } else if (in.rect_before_acquire != in.rect_at_render) {
-    d.reason = Reason::kRectMoved;
+  } else if (pre.client != in.render.client) {
+    d.reason = Reason::kChangedSinceAcquire;
   } else if (in.now_ns - settle.last_change_ns < kSettleNs) {
     d.reason = Reason::kSettling;
   } else {
     d.show_game = true;
     d.reason = Reason::kGame;
-    d.crop.left = in.rect_at_render.left - in.monitor.left;
-    d.crop.top = in.rect_at_render.top - in.monitor.top;
-    d.crop.right = in.rect_at_render.right - in.monitor.left;
-    d.crop.bottom = in.rect_at_render.bottom - in.monitor.top;
+    d.crop.left = in.render.client.left - pre.monitor.left;
+    d.crop.top = in.render.client.top - pre.monitor.top;
+    d.crop.right = in.render.client.right - pre.monitor.left;
+    d.crop.bottom = in.render.client.bottom - pre.monitor.top;
   }
   return d;
 }

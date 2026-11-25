@@ -200,17 +200,24 @@ void Render(void* data, gs_effect_t* effect) {
   GuardDecision d;
   if (f->have_pre) {
     GuardInputs in;
-    in.window_alive = f->pre.window_alive;
-    in.desktop_front = f->desktop_front.load();
-    in.foreground_is_game = f->pre.foreground_is_game;
-    in.occluded = f->pre.occluded;
-    in.monitor = f->pre.monitor;
-    in.rect_before_acquire = f->pre.client;
-    in.rect_at_render =
+    in.pre.complete = true;
+    in.pre.target = f->pre.target;
+    in.pre.window_alive = f->pre.window_alive;
+    in.pre.foreground_is_game = f->pre.foreground_is_game;
+    in.pre.occluded = f->pre.occluded;
+    in.pre.monitor = f->pre.monitor;
+    in.pre.client = f->pre.client;
+    in.render = in.pre;
+    in.render.client =
         f->pre.window_alive ? f->facts.ReadClientRect(f->pre.target) : Rect();
+    in.desktop_front = f->desktop_front.load();
     in.reshown = f->hidden_since_render;
     f->hidden_since_render = false;
     in.now_ns = os_gettime_ns();
+    // provenance is not read yet (tests first)
+    in.frame.valid = true;
+    in.frame.area = f->pre.monitor;
+    in.frame.present_ns = in.now_ns;
     d = Decide(in, f->settle);
   }
   LogDecision(f, d);

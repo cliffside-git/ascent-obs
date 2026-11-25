@@ -1,5 +1,6 @@
-// Follow-window mode: the 'follow_window' payload key and the per-frame
-// guard (w10win PROTOCOL.md rules 1-7 and the settle), without OBS or Win32.
+// Follow-window mode: the 'follow_window' payload key, the later-START
+// reconcile and the per-frame guard (w10win PROTOCOL.md rules 1-9 and the
+// settle), without OBS or Win32.
 // Built and run against a local OBS build by scripts/run_tests.ps1.
 #include <windows.h>
 #include <obs.hpp>
@@ -24,11 +25,13 @@ int failures = 0;
   } while (0)
 
 using follow_window::Decide;
+using follow_window::FrameFacts;
 using follow_window::GuardDecision;
 using follow_window::GuardInputs;
 using follow_window::Reason;
 using follow_window::Rect;
 using follow_window::SettleState;
+using follow_window::Snapshot;
 using follow_window::WindowFacts;
 
 const uint64_t kMs = 1000000ull;
@@ -125,22 +128,103 @@ void TestNoFollowUnchanged() {
 }
 
 // ---------------------------------------------------------------------------
+// the monitor config and a later START (Codex findings 1, 2, 6)
+
+settings::MonitorConfig Config(const char* json) {
+  OBSDataAutoRelease monitor = obs_data_create_from_json(json);
+  return settings::ParseMonitorConfig(monitor);
+}
+
+void TestMonitorConfig() {
+  printf("the config a fallback rebuilds from keeps follow, method, BRB and "
+         "cursor\n");
+  settings::MonitorConfig c = Config(
+      R"({"enable":true,"method":1,"brb_when_unfocused":true,"cursor":true,)"
+      R"("follow_window":133090})");
+  CHECK(c.cursor && c.method == 1 && c.brb_when_unfocused &&
+        c.follow_window == 133090);
+  CHECK(settings::FollowWindowActive(c));
+  settings::MonitorConfig none = settings::ParseMonitorConfig(nullptr);
+  CHECK(!none.cursor && none.method == 0 && !none.brb_when_unfocused &&
+        none.follow_window == 0);
+}
+
+void TestLaterStart() {
+  using settings::LaterStart;
+  using settings::ReconcileLaterStart;
+  const settings::MonitorConfig a = Config(
+      R"({"method":1,"brb_when_unfocused":true,"cursor":true,)"
+      R"("follow_window":1000})");
+  const settings::MonitorConfig b = Config(
+      R"({"method":1,"brb_when_unfocused":true,"cursor":true,)"
+      R"("follow_window":2000})");
+  const settings::MonitorConfig plain =
+      Config(R"({"method":1,"brb_when_unfocused":true,"cursor":true})");
+  const settings::MonitorConfig gdi_b =
+      Config(R"({"method":0,"brb_when_unfocused":true,"follow_window":2000})");
+
+  printf("later START, guarded A -> B: the guard retargets in place\n");
+  CHECK(ReconcileLaterStart(a, true, b) == LaterStart::kRetarget);
+  printf("later START, guarded A -> A: nothing changes\n");
+  CHECK(ReconcileLaterStart(a, true, a) == LaterStart::kKeep);
+  printf("later START without follow_window: the guard stays on A\n");
+  CHECK(ReconcileLaterStart(a, true, plain) == LaterStart::kKeep);
+  printf("later START with a window but not DXGI: the guard stays on A\n");
+  CHECK(ReconcileLaterStart(a, true, gdi_b) == LaterStart::kKeep);
+  printf("later START asks to follow on an unguarded source: rebuild it "
+         "guarded\n");
+  CHECK(ReconcileLaterStart(plain, false, b) == LaterStart::kRebuildGuarded);
+  printf("later START, unguarded, no usable window: nothing changes\n");
+  CHECK(ReconcileLaterStart(plain, false, plain) == LaterStart::kKeep);
+  CHECK(ReconcileLaterStart(plain, false, gdi_b) == LaterStart::kKeep);
+}
+
+// ---------------------------------------------------------------------------
 // guard
 
 const Rect kMonitor = R(0, 0, 1920, 1080);
 const Rect kGame = R(108, 111, 1474, 879);  // 1366x768 client
+const uint64_t kTarget = 0x1234;
+
+Snapshot GoodSnap() {
+  Snapshot s;
+  s.complete = true;
+  s.target = kTarget;
+  s.window_alive = true;
+  s.foreground_is_game = true;
+  s.occluded = false;
+  s.client = kGame;
+  s.monitor = kMonitor;
+  return s;
+}
 
 GuardInputs Good(uint64_t now) {
   GuardInputs in;
-  in.window_alive = true;
+  in.pre = GoodSnap();
+  in.render = GoodSnap();
   in.desktop_front = true;
-  in.foreground_is_game = true;
-  in.occluded = false;
-  in.monitor = kMonitor;
-  in.rect_before_acquire = kGame;
-  in.rect_at_render = kGame;
+  in.frame.valid = true;
+  in.frame.area = kMonitor;
+  in.frame.present_ns = now - kMs;
   in.now_ns = now;
   return in;
+}
+
+// the same change in both reads of a frame
+void Both(GuardInputs& in, void (*change)(Snapshot&)) {
+  change(in.pre);
+  change(in.render);
+}
+
+// a live game: every frame holds a desktop image presented 1 ms before it.
+// Turn off to freeze the image (a failed acquire, a stalled desktop).
+bool live_frames = true;
+
+GuardDecision Run(GuardInputs& in, SettleState& s) {
+  if (live_frames) {
+    in.frame.present_ns = in.now_ns - kMs;
+  }
+  return Decide(in, s);
 }
 
 // a settle state that has seen |in| steadily for a long time
@@ -149,7 +233,7 @@ SettleState Settled(const GuardInputs& in) {
   GuardInputs warm = in;
   for (uint64_t t = 0; t <= 400; t += 16) {
     warm.now_ns = in.now_ns - 400 * kMs + t * kMs;
-    Decide(warm, s);
+    Run(warm, s);
   }
   return s;
 }
@@ -157,13 +241,12 @@ SettleState Settled(const GuardInputs& in) {
 // renders frames every 10 ms (steady inputs) up to |until|; returns the
 // decision of the frame at |until|
 GuardDecision StepTo(GuardInputs& in, SettleState& s, uint64_t until) {
-  GuardDecision d;
   while (in.now_ns + 10 * kMs < until) {
     in.now_ns += 10 * kMs;
-    Decide(in, s);
+    Run(in, s);
   }
   in.now_ns = until;
-  return Decide(in, s);
+  return Run(in, s);
 }
 
 void TestSteadyGame() {
@@ -171,27 +254,30 @@ void TestSteadyGame() {
   GuardInputs in = Good(10000 * kMs);
   SettleState s = Settled(in);
   in.now_ns += 16 * kMs;
-  GuardDecision d = Decide(in, s);
+  GuardDecision d = Run(in, s);
   CHECK(d.show_game);
   CHECK(d.reason == Reason::kGame);
   CHECK(d.crop == R(108, 111, 1474, 879));
 
   printf("crop is monitor-relative (second monitor at x=1920)\n");
   GuardInputs in2 = Good(10000 * kMs);
-  in2.monitor = R(1920, 0, 3840, 1080);
-  in2.rect_before_acquire = in2.rect_at_render = R(2020, 100, 3300, 820);
+  Both(in2, [](Snapshot& x) {
+    x.monitor = R(1920, 0, 3840, 1080);
+    x.client = R(2020, 100, 3300, 820);
+  });
+  in2.frame.area = R(1920, 0, 3840, 1080);
   SettleState s2 = Settled(in2);
   in2.now_ns += 16 * kMs;
-  GuardDecision d2 = Decide(in2, s2);
+  GuardDecision d2 = Run(in2, s2);
   CHECK(d2.show_game);
   CHECK(d2.crop == R(100, 100, 1380, 820));
 
   printf("borderless: crop == the whole monitor\n");
   GuardInputs in3 = Good(10000 * kMs);
-  in3.rect_before_acquire = in3.rect_at_render = kMonitor;
+  Both(in3, [](Snapshot& x) { x.client = kMonitor; });
   SettleState s3 = Settled(in3);
   in3.now_ns += 16 * kMs;
-  GuardDecision d3 = Decide(in3, s3);
+  GuardDecision d3 = Run(in3, s3);
   CHECK(d3.show_game);
   CHECK(d3.crop == kMonitor);
 }
@@ -201,66 +287,188 @@ GuardDecision Broken(void (*breakit)(GuardInputs&)) {
   GuardInputs in = Good(10000 * kMs);
   SettleState s = Settled(in);
   in.now_ns += 16 * kMs;
+  in.frame.present_ns = in.now_ns - kMs;
   breakit(in);
   return Decide(in, s);
 }
 
 void TestEachRule() {
   printf("rule 1: another pid in front -> BRB\n");
-  GuardDecision d = Broken([](GuardInputs& in) { in.foreground_is_game = false; });
+  GuardDecision d = Broken([](GuardInputs& in) {
+    Both(in, [](Snapshot& x) { x.foreground_is_game = false; });
+  });
   CHECK(!d.show_game && d.reason == Reason::kNotForeground);
 
   printf("rule 2: occluded -> BRB\n");
-  d = Broken([](GuardInputs& in) { in.occluded = true; });
+  d = Broken([](GuardInputs& in) {
+    Both(in, [](Snapshot& x) { x.occluded = true; });
+  });
   CHECK(!d.show_game && d.reason == Reason::kOccluded);
 
   printf("rule 3: client rect not fully on the monitor -> BRB\n");
   d = Broken([](GuardInputs& in) {
-    in.rect_before_acquire = in.rect_at_render = R(-10, 100, 1356, 868);
+    Both(in, [](Snapshot& x) { x.client = R(-10, 100, 1356, 868); });
   });
   CHECK(!d.show_game && d.reason == Reason::kOffMonitor);
   d = Broken([](GuardInputs& in) {
-    in.rect_before_acquire = in.rect_at_render = R(600, 400, 1966, 1168);
+    Both(in, [](Snapshot& x) { x.client = R(600, 400, 1966, 1168); });
   });
   CHECK(!d.show_game && d.reason == Reason::kOffMonitor);
   printf("rule 3: an edge exactly on the monitor edge is on the monitor\n");
   GuardInputs edge = Good(10000 * kMs);
-  edge.rect_before_acquire = edge.rect_at_render = R(554, 312, 1920, 1080);
+  Both(edge, [](Snapshot& x) { x.client = R(554, 312, 1920, 1080); });
   SettleState se = Settled(edge);
   edge.now_ns += 16 * kMs;
-  CHECK(Decide(edge, se).show_game);
+  CHECK(Run(edge, se).show_game);
   printf("rule 3: minimized (empty rect at -32000) -> BRB\n");
   d = Broken([](GuardInputs& in) {
-    in.rect_before_acquire = in.rect_at_render =
-        R(-32000, -32000, -32000, -32000);
+    Both(in, [](Snapshot& x) {
+      x.client = R(-32000, -32000, -32000, -32000);
+    });
   });
   CHECK(!d.show_game && d.reason == Reason::kOffMonitor);
 
   printf("rule 4: rect at render != rect before acquire -> BRB\n");
-  d = Broken([](GuardInputs& in) { in.rect_at_render = R(110, 111, 1476, 879); });
-  CHECK(!d.show_game && d.reason == Reason::kRectMoved);
-  d = Broken([](GuardInputs& in) { in.rect_at_render = R(108, 111, 1475, 879); });
-  CHECK(!d.show_game && d.reason == Reason::kRectMoved);
+  d = Broken([](GuardInputs& in) { in.render.client = R(110, 111, 1476, 879); });
+  CHECK(!d.show_game && d.reason == Reason::kChangedSinceAcquire);
+  d = Broken([](GuardInputs& in) { in.render.client = R(108, 111, 1475, 879); });
+  CHECK(!d.show_game && d.reason == Reason::kChangedSinceAcquire);
 
   printf("rule 6: desktop focus says not in front -> BRB\n");
   d = Broken([](GuardInputs& in) { in.desktop_front = false; });
   CHECK(!d.show_game && d.reason == Reason::kDesktopUnfocused);
 
   printf("rule 7: window gone -> BRB\n");
-  d = Broken([](GuardInputs& in) { in.window_alive = false; });
+  d = Broken([](GuardInputs& in) {
+    Both(in, [](Snapshot& x) { x.window_alive = false; });
+  });
   CHECK(!d.show_game && d.reason == Reason::kWindowGone);
 
   printf("several rules: the reason is the first in rule order 7,6,1,2,3,4\n");
   d = Broken([](GuardInputs& in) {
-    in.foreground_is_game = false;
-    in.occluded = true;
+    Both(in, [](Snapshot& x) {
+      x.foreground_is_game = false;
+      x.occluded = true;
+    });
   });
   CHECK(d.reason == Reason::kNotForeground);
   d = Broken([](GuardInputs& in) {
-    in.occluded = true;
-    in.rect_at_render = R(0, 0, 10, 10);
+    Both(in, [](Snapshot& x) { x.occluded = true; });
+    in.render.client = R(0, 0, 10, 10);
   });
   CHECK(d.reason == Reason::kOccluded);
+}
+
+// Codex 4 / rule 9: every fact is read again at render; a change seen only
+// there vetoes the frame
+void TestRenderRecheck() {
+  printf("rule 9: an occluder seen only at render -> BRB\n");
+  GuardDecision d =
+      Broken([](GuardInputs& in) { in.render.occluded = true; });
+  CHECK(!d.show_game && d.reason == Reason::kOccluded);
+
+  printf("rule 9: another pid in front only at render -> BRB\n");
+  d = Broken([](GuardInputs& in) { in.render.foreground_is_game = false; });
+  CHECK(!d.show_game && d.reason == Reason::kNotForeground);
+
+  printf("rule 9: the window is gone at render -> BRB\n");
+  d = Broken([](GuardInputs& in) { in.render.window_alive = false; });
+  CHECK(!d.show_game && d.reason == Reason::kWindowGone);
+
+  printf("rule 9: a different target at render (HWND adopted or reused), same "
+         "rect -> BRB\n");
+  d = Broken([](GuardInputs& in) { in.render.target = 0x5678; });
+  CHECK(!d.show_game && d.reason == Reason::kChangedSinceAcquire);
+
+  printf("rule 9: the monitor changes at render (mode change) -> BRB\n");
+  d = Broken([](GuardInputs& in) { in.render.monitor = R(0, 0, 1600, 900); });
+  CHECK(!d.show_game);
+
+  printf("rule 8: a z-order walk that did not finish is unknown -> BRB\n");
+  d = Broken([](GuardInputs& in) { in.pre.complete = false; });
+  CHECK(!d.show_game && d.reason == Reason::kUnknown);
+  d = Broken([](GuardInputs& in) { in.render.complete = false; });
+  CHECK(!d.show_game && d.reason == Reason::kUnknown);
+
+  printf("rule 9: an occluder seen only at render restarts the settle\n");
+  GuardInputs in = Good(10000 * kMs);
+  SettleState s = Settled(in);
+  in.now_ns += 16 * kMs;
+  in.render.occluded = true;
+  Run(in, s);
+  uint64_t seen = in.now_ns;
+  in.render.occluded = false;  // gone again by the next frame
+  CHECK(!StepTo(in, s, seen + 16 * kMs).show_game);
+  CHECK(!StepTo(in, s, seen + 99 * kMs).show_game);
+  CHECK(StepTo(in, s, seen + 140 * kMs).show_game);
+}
+
+// Codex 7: A at acquire, B at render, then A again
+void TestRoundTrip() {
+  printf("rule 9: A->B->A within two frames still settles 100 ms\n");
+  const Rect a = kGame;
+  const Rect b = R(140, 111, 1506, 879);
+  GuardInputs in = Good(10000 * kMs);
+  SettleState s = Settled(in);
+  uint64_t t1 = in.now_ns + 33 * kMs;
+  in.now_ns = t1;
+  in.pre.client = a;
+  in.render.client = b;
+  GuardDecision d1 = Run(in, s);
+  CHECK(!d1.show_game && d1.reason == Reason::kChangedSinceAcquire);
+  in.render.client = a;  // back at A for both reads
+  in.now_ns = t1 + 33 * kMs;
+  GuardDecision d2 = Run(in, s);
+  CHECK(!d2.show_game && d2.reason == Reason::kSettling);
+  CHECK(!StepTo(in, s, t1 + 99 * kMs).show_game);
+  CHECK(StepTo(in, s, t1 + 33 * kMs + 100 * kMs).show_game);
+}
+
+// Codex 5 / rule 8: frame provenance
+void TestFrameProvenance() {
+  printf("rule 8: no new desktop image since the change -> BRB past the "
+         "settle\n");
+  live_frames = false;
+  GuardInputs in = Good(10000 * kMs);
+  SettleState s = Settled(in);  // frozen image presented at 9999 ms
+  in.now_ns += 16 * kMs;
+  Both(in, [](Snapshot& x) { x.occluded = true; });  // Notepad on top
+  Decide(in, s);
+  Both(in, [](Snapshot& x) { x.occluded = false; });  // and gone again
+  uint64_t back = in.now_ns + 16 * kMs;
+  in.now_ns = back;
+  Decide(in, s);
+  // the acquire keeps timing out: the held image is from before the change
+  GuardDecision d = StepTo(in, s, back + 500 * kMs);
+  CHECK(!d.show_game && d.reason == Reason::kStaleFrame);
+  printf("rule 8: a new desktop image after the change -> game\n");
+  in.frame.present_ns = back + 510 * kMs;
+  d = StepTo(in, s, back + 520 * kMs);
+  CHECK(d.show_game);
+  printf("rule 8: a still desktop keeps the approved image (no change since "
+         "it)\n");
+  d = StepTo(in, s, back + 2000 * kMs);
+  CHECK(d.show_game);
+
+  printf("rule 8: no desktop image at all since start -> BRB\n");
+  GuardInputs f = Good(5000 * kMs);
+  f.frame.present_ns = 0;
+  SettleState sf;
+  CHECK(!StepTo(f, sf, 5300 * kMs).show_game);
+  CHECK(StepTo(f, sf, 5300 * kMs).reason == Reason::kStaleFrame);
+  live_frames = true;
+
+  printf("rule 8: the capture holds no image -> BRB\n");
+  d = Broken([](GuardInputs& in2) { in2.frame.valid = false; });
+  CHECK(!d.show_game && d.reason == Reason::kCaptureMismatch);
+  printf("rule 8: the image is not the monitor's size -> BRB\n");
+  d = Broken([](GuardInputs& in2) { in2.frame.area = R(0, 0, 1280, 720); });
+  CHECK(!d.show_game && d.reason == Reason::kCaptureMismatch);
+  printf("rule 8: the image is another monitor (origin differs) -> BRB\n");
+  d = Broken([](GuardInputs& in2) {
+    in2.frame.area = R(1920, 0, 3840, 1080);
+  });
+  CHECK(!d.show_game && d.reason == Reason::kCaptureMismatch);
 }
 
 // rule 5: BRB until 100 ms after the last change of any input
@@ -271,28 +479,28 @@ void SettleAfter(const char* what, void (*change)(GuardInputs&)) {
   uint64_t t0 = in.now_ns + 16 * kMs;
   in.now_ns = t0;
   change(in);
-  Decide(in, s);  // the change frame (may be BRB for its own rule)
+  Run(in, s);  // the change frame (may be BRB for its own rule)
   // the change is undone or holds; either way 100 ms of BRB follows it
   bool all_brb = true;
   for (uint64_t t = 16; t < 100; t += 16) {
     in.now_ns = t0 + t * kMs;
-    GuardDecision d = Decide(in, s);
+    GuardDecision d = Run(in, s);
     if (d.show_game) {
       all_brb = false;
     }
   }
   CHECK(all_brb);
   in.now_ns = t0 + 100 * kMs;
-  GuardDecision d = Decide(in, s);
+  GuardDecision d = Run(in, s);
   CHECK(d.show_game || d.reason != Reason::kSettling);
 }
 
 void TestSettle() {
   SettleAfter("a move (rect changes and stays)", [](GuardInputs& in) {
-    in.rect_before_acquire = in.rect_at_render = R(200, 111, 1566, 879);
+    Both(in, [](Snapshot& x) { x.client = R(200, 111, 1566, 879); });
   });
   SettleAfter("a resize", [](GuardInputs& in) {
-    in.rect_before_acquire = in.rect_at_render = R(108, 111, 1374, 829);
+    Both(in, [](Snapshot& x) { x.client = R(108, 111, 1374, 829); });
   });
 
   printf("rule 5: back in front after alt-tab -> 100 ms of BRB (P3 stale "
@@ -300,28 +508,30 @@ void TestSettle() {
   GuardInputs in = Good(10000 * kMs);
   SettleState s = Settled(in);
   uint64_t t = in.now_ns;
-  in.foreground_is_game = false;
+  Both(in, [](Snapshot& x) { x.foreground_is_game = false; });
   for (int i = 0; i < 30; i++) {
     t += 16 * kMs;
     in.now_ns = t;
-    if (Decide(in, s).show_game) {
+    if (Run(in, s).show_game) {
       failures++;
       printf("FAIL: game shown while Notepad in front\n");
     }
   }
-  in.foreground_is_game = true;
+  Both(in, [](Snapshot& x) { x.foreground_is_game = true; });
   uint64_t back = t + 16 * kMs;
   in.now_ns = back;
-  GuardDecision d = Decide(in, s);
+  GuardDecision d = Run(in, s);
   CHECK(!d.show_game && d.reason == Reason::kSettling);
   d = StepTo(in, s, back + 33 * kMs);  // P3 saw the stale frame 2 ticks later
   CHECK(!d.show_game && d.reason == Reason::kSettling);
   CHECK(!StepTo(in, s, back + 99 * kMs).show_game);
   CHECK(StepTo(in, s, back + 100 * kMs).show_game);
 
-  SettleAfter("an occluder appears", [](GuardInputs& in) { in.occluded = true; });
+  SettleAfter("an occluder appears", [](GuardInputs& in) {
+    Both(in, [](Snapshot& x) { x.occluded = true; });
+  });
   SettleAfter("back on the monitor", [](GuardInputs& in) {
-    in.rect_before_acquire = in.rect_at_render = R(-10, 100, 1356, 868);
+    Both(in, [](Snapshot& x) { x.client = R(-10, 100, 1356, 868); });
   });
   SettleAfter("desktop focus back", [](GuardInputs& in) {
     in.desktop_front = false;
@@ -331,44 +541,45 @@ void TestSettle() {
   GuardInputs m = Good(10000 * kMs);
   SettleState sm = Settled(m);
   m.now_ns += 16 * kMs;
-  m.occluded = true;
-  Decide(m, sm);
+  Both(m, [](Snapshot& x) { x.occluded = true; });
+  Run(m, sm);
   uint64_t change = m.now_ns;
-  m.occluded = false;  // cover leaves on the next frame: that is a change too
+  // cover leaves on the next frame: that is a change too
+  Both(m, [](Snapshot& x) { x.occluded = false; });
   m.now_ns = change + 16 * kMs;
-  CHECK(!Decide(m, sm).show_game);
+  CHECK(!Run(m, sm).show_game);
   CHECK(!StepTo(m, sm, change + 16 * kMs + 99 * kMs).show_game);
   CHECK(StepTo(m, sm, change + 16 * kMs + 100 * kMs).show_game);
 
   printf("rule 5: first frame after start settles\n");
   GuardInputs f = Good(5000 * kMs);
   SettleState sf;
-  GuardDecision df = Decide(f, sf);
+  GuardDecision df = Run(f, sf);
   CHECK(!df.show_game && df.reason == Reason::kSettling);
   f.now_ns += 50 * kMs;
-  CHECK(!Decide(f, sf).show_game);
+  CHECK(!Run(f, sf).show_game);
   f.now_ns += 50 * kMs;
-  CHECK(Decide(f, sf).show_game);
+  CHECK(Run(f, sf).show_game);
 
   printf("rule 5: a long render gap (2 s) settles\n");
   GuardInputs g = Good(10000 * kMs);
   SettleState sg = Settled(g);
   g.now_ns += 2000 * kMs;  // not rendered for 2 s, inputs look the same
-  GuardDecision dg = Decide(g, sg);
+  GuardDecision dg = Run(g, sg);
   CHECK(!dg.show_game && dg.reason == Reason::kSettling);
   g.now_ns += 16 * kMs;
-  CHECK(!Decide(g, sg).show_game);
+  CHECK(!Run(g, sg).show_game);
   printf("rule 5: a normal 33 ms frame gap (30 fps) does not settle\n");
   GuardInputs h = Good(10000 * kMs);
   SettleState sh = Settled(h);
   h.now_ns += 33 * kMs;
-  CHECK(Decide(h, sh).show_game);
+  CHECK(Run(h, sh).show_game);
   printf("rule 5: render lag (VM r1 at 150%%: 57%% lagged frames) does not "
          "settle on its own\n");
   bool lag_ok = true;
   for (int i = 0; i < 20; i++) {
     h.now_ns += (i % 2 ? 66 : 133) * kMs;  // frames 66-133 ms apart
-    if (!Decide(h, sh).show_game) {
+    if (!Run(h, sh).show_game) {
       lag_ok = false;
     }
   }
@@ -379,7 +590,7 @@ void TestSettle() {
   SettleState sr = Settled(r);
   r.now_ns += 33 * kMs;
   r.reshown = true;
-  GuardDecision dr = Decide(r, sr);
+  GuardDecision dr = Run(r, sr);
   CHECK(!dr.show_game && dr.reason == Reason::kSettling);
   r.reshown = false;
   uint64_t reshown_at = r.now_ns;
@@ -389,7 +600,7 @@ void TestSettle() {
   GuardInputs b = Good(10000 * kMs);
   SettleState sb = Settled(b);
   b.now_ns -= 5 * kMs;
-  CHECK(!Decide(b, sb).show_game);
+  CHECK(!Run(b, sb).show_game);
 }
 
 // ---------------------------------------------------------------------------
@@ -463,18 +674,21 @@ void TestOccluder() {
 void TestResolveTarget() {
   using follow_window::ResolveTarget;
   using follow_window::TargetFacts;
-  printf("rule 7: a live window of the game is kept\n");
+  printf("rule 7: a live, drawable window of the game is kept\n");
   TargetFacts f;
   f.target = 0x1234;
   f.target_alive = true;
+  f.target_drawable = true;
   f.game_pid = kGamePid;
   f.foreground = 0x9999;
   f.foreground_pid = 7;
+  f.foreground_drawable = true;
   auto r = ResolveTarget(f);
   CHECK(r.target == 0x1234 && !r.adopted && !r.gone);
 
   printf("rule 7: gone, the foreground window is the game's pid -> adopt\n");
   f.target_alive = false;
+  f.target_drawable = false;
   f.foreground_pid = kGamePid;
   r = ResolveTarget(f);
   CHECK(r.target == 0x9999 && r.adopted && !r.gone);
@@ -497,7 +711,36 @@ void TestResolveTarget() {
   z.game_pid = 0;
   z.foreground = 0x9999;
   z.foreground_pid = 0;
+  z.foreground_drawable = true;
   CHECK(ResolveTarget(z).gone);
+
+  // Codex 8: a live HWND that draws nothing is not a game picture
+  printf("rule 7: alive but hidden, a drawable window of the game in front "
+         "-> adopt it\n");
+  TargetFacts h;
+  h.target = 0x1234;
+  h.target_alive = true;
+  h.target_drawable = false;  // hidden, cloaked or minimized
+  h.game_pid = kGamePid;
+  h.foreground = 0x9999;
+  h.foreground_pid = kGamePid;
+  h.foreground_drawable = true;
+  r = ResolveTarget(h);
+  CHECK(r.target == 0x9999 && r.adopted && !r.gone);
+  printf("rule 7: alive but hidden, another pid in front -> BRB\n");
+  h.foreground_pid = 7;
+  r = ResolveTarget(h);
+  CHECK(r.gone && r.target == 0);
+  printf("rule 7: alive but hidden, the game's other window in front is not "
+         "drawable either -> BRB\n");
+  h.foreground_pid = kGamePid;
+  h.foreground_drawable = false;
+  CHECK(ResolveTarget(h).gone);
+  printf("rule 7: the hidden target itself is the foreground (minimized game "
+         "still active) -> BRB\n");
+  h.foreground = 0x1234;
+  h.foreground_drawable = false;
+  CHECK(ResolveTarget(h).gone);
 }
 
 void TestFitInside() {
@@ -520,8 +763,13 @@ int main(int, char**) {
   TestParse();
   TestActive();
   TestNoFollowUnchanged();
+  TestMonitorConfig();
+  TestLaterStart();
   TestSteadyGame();
   TestEachRule();
+  TestRenderRecheck();
+  TestRoundTrip();
+  TestFrameProvenance();
   TestSettle();
   TestOccluder();
   TestResolveTarget();

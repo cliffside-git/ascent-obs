@@ -209,6 +209,34 @@ bool settings::FollowWindowActive(uint64_t follow_window, int method,
   return follow_window != 0 && method == kMethodDxgi && brb_when_unfocused;
 }
 
+settings::MonitorConfig settings::ParseMonitorConfig(
+    obs_data_t* monitor_settings) {
+  MonitorConfig c;
+  if (!monitor_settings) {
+    return c;
+  }
+  c.cursor = obs_data_get_bool(monitor_settings, "cursor");
+  c.method = ParseMonitorCaptureMethod(monitor_settings);
+  c.brb_when_unfocused = ParseMonitorBrbWhenUnfocused(monitor_settings);
+  c.follow_window = ParseMonitorFollowWindow(monitor_settings);
+  return c;
+}
+
+bool settings::FollowWindowActive(const MonitorConfig& config) {
+  return FollowWindowActive(config.follow_window, config.method,
+                            config.brb_when_unfocused);
+}
+
+settings::LaterStart settings::ReconcileLaterStart(
+    const MonitorConfig& running, bool guarded,
+    const MonitorConfig& requested) {
+  // STUB (tests first)
+  UNUSED_PARAMETER(running);
+  UNUSED_PARAMETER(guarded);
+  UNUSED_PARAMETER(requested);
+  return LaterStart::kKeep;
+}
+
 void settings::FillMonitorCaptureSettings(obs_data_t* out,
                                           uint32_t monitor_handle,
                                           int monitor_index, bool cursor,
