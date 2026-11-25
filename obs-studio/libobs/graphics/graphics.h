@@ -939,6 +939,14 @@ EXPORT gs_texture_t *gs_duplicator_get_texture(gs_duplicator_t *duplicator);
 EXPORT enum gs_color_space
 gs_duplicator_get_color_space(gs_duplicator_t *duplicator);
 EXPORT float gs_duplicator_get_sdr_white_level(gs_duplicator_t *duplicator);
+// ASCENT_EDIT_START: frame provenance for follow-window capture
+/** whether the duplicator holds an image; |generation| counts new desktop
+ * images copied (pointer-only updates don't count) and |last_present_qpc| is
+ * the QueryPerformanceCounter time of the last one (0: none yet) */
+EXPORT bool gs_duplicator_get_frame_info(gs_duplicator_t *duplicator,
+					 uint64_t *generation,
+					 int64_t *last_present_qpc);
+// ASCENT_EDIT_END: frame provenance for follow-window capture
 
 EXPORT bool gs_can_adapter_fast_clear(void);
 

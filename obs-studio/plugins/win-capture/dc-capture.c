@@ -166,6 +166,9 @@ void dc_capture_capture(struct dc_capture *capture, HWND window)
 		capture->cursor_captured = GetCursorInfo(&capture->ci);
 	}
 
+	// ASCENT_EDIT_START: frame provenance for follow-window capture
+	capture->last_capture_ok = false;
+	// ASCENT_EDIT_END: frame provenance for follow-window capture
 	hdc = dc_capture_get_dc(capture);
 	if (!hdc) {
 		blog(LOG_WARNING, "[capture_screen] Failed to get "
@@ -175,8 +178,11 @@ void dc_capture_capture(struct dc_capture *capture, HWND window)
 
 	hdc_target = GetDC(window);
 
-	BitBlt(hdc, 0, 0, capture->width, capture->height, hdc_target,
-	       capture->x, capture->y, SRCCOPY);
+	// ASCENT_EDIT_START: frame provenance for follow-window capture
+	capture->last_capture_ok =
+		BitBlt(hdc, 0, 0, capture->width, capture->height, hdc_target,
+		       capture->x, capture->y, SRCCOPY) != FALSE;
+	// ASCENT_EDIT_END: frame provenance for follow-window capture
 
 	ReleaseDC(NULL, hdc_target);
 

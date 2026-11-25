@@ -202,6 +202,7 @@ private:
   virtual void OnBlackTextureDetected(OBSDisplayTester::TestSouceType type);
   virtual void OnColoredTextedDetected(OBSDisplayTester::TestSouceType type);
   virtual Source* GetSource(OBSDisplayTester::TestSouceType source_type);
+  virtual bool IsMonitorTestable();
 
   //libascentobs::TimerQueueTimerDelegate
   virtual void OnTimer(libascentobs::TimerQueueTimer* timer);
@@ -210,6 +211,20 @@ private:
 
 private:
   bool InitMonitorSource(OBSData& monitor_handle, OBSData& error_result);
+  // a later START asks to follow a window on the running unguarded monitor
+  // source: replace it with a guarded one
+  void RebuildMonitorSourceGuarded(OBSData& monitor_setting);
+  // the black-texture fallback, on the command thread under sync_
+  void ReplaceMonitorWithCompatibility(MonitorSource* replaced);
+  // swaps |monitor_source_| under |monitor_publish_mutex_| and destroys the
+  // replaced one after releasing it, so a graphics-thread reader never sees a
+  // freed source
+  void PublishMonitorSource(std::unique_ptr<MonitorSource> next);
+  // a MonitorSource whose follow-window reason changes reach the desktop
+  MonitorSource* NewMonitorSource();
+  // EVT_DISPLAY_SOURCE_CHANGED {source, reason, follow: true}; command thread
+  void SendFollowWindowSourceEvent(MonitorSource* sender, bool show_game,
+                                   std::string reason);
   bool InitWindowSource(OBSData& window_setting, OBSData& error_result);
   bool InitBRBSource(OBSData& brb_setting, OBSData& error_result);
   // monitor is the only capture and the desktop asked to show BRB instead of
@@ -334,6 +349,8 @@ private:
   OBSData pending_tobii_;
 
   std::mutex access_mutex_;
+  // guards replacing |monitor_source_| against the display tester's reads
+  std::mutex monitor_publish_mutex_;
 
   // game source wasn't frame wasn't capture...
   bool game_source_capture_failure_ = false;

@@ -224,6 +224,9 @@ bool load_graphics_imports(struct gs_exports *exports, void *module,
 	GRAPHICS_IMPORT_OPTIONAL(gs_duplicator_get_texture);
 	GRAPHICS_IMPORT_OPTIONAL(gs_duplicator_get_color_space);
 	GRAPHICS_IMPORT_OPTIONAL(gs_duplicator_get_sdr_white_level);
+	// ASCENT_EDIT_START: frame provenance for follow-window capture
+	GRAPHICS_IMPORT_OPTIONAL(gs_duplicator_get_frame_info);
+	// ASCENT_EDIT_END: frame provenance for follow-window capture
 	GRAPHICS_IMPORT_OPTIONAL(device_can_adapter_fast_clear);
 	GRAPHICS_IMPORT_OPTIONAL(device_texture_create_gdi);
 	GRAPHICS_IMPORT_OPTIONAL(gs_texture_get_dc);

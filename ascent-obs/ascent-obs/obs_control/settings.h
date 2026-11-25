@@ -141,6 +141,12 @@ enum class LaterStart {
 LaterStart ReconcileLaterStart(const MonitorConfig& running, bool guarded,
                                const MonitorConfig& requested);
 
+// EVT_DISPLAY_SOURCE_CHANGED payload for a follow-window reason change:
+// {"source": "monitor"|"brb", "reason": <key>, "follow": true}. The scene's
+// own event (1.3.1) has only "source"; desktops ignore the extra keys.
+void FillFollowWindowSourceEvent(obs_data_t* out, bool show_game,
+                                 const char* reason);
+
 // the settings the monitor source gives OBS's monitor_capture. Follow-window
 // mode adds nothing here: it is a filter on top of the same source.
 void FillMonitorCaptureSettings(obs_data_t* out, uint32_t monitor_handle,

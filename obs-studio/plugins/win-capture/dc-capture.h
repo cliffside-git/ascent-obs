@@ -24,6 +24,9 @@ struct dc_capture {
 	CURSORINFO ci;
 
 	bool valid;
+	// ASCENT_EDIT_START: frame provenance for follow-window capture
+	bool last_capture_ok;
+	// ASCENT_EDIT_END: frame provenance for follow-window capture
 };
 
 extern void dc_capture_init(struct dc_capture *capture, int x, int y,

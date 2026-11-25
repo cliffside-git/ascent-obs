@@ -400,7 +400,64 @@ void TestRenderRecheck() {
   in.render.occluded = false;  // gone again by the next frame
   CHECK(!StepTo(in, s, seen + 16 * kMs).show_game);
   CHECK(!StepTo(in, s, seen + 99 * kMs).show_game);
-  CHECK(StepTo(in, s, seen + 140 * kMs).show_game);
+  // the cover is gone from the next frame on: an animated transition
+  CHECK(!StepTo(in, s, seen + 409 * kMs).show_game);
+  CHECK(StepTo(in, s, seen + 420 * kMs).show_game);
+}
+
+// VM r1 (obs2): DWM animates a window that opens, closes, hides, minimizes
+// or restores for ~200-300 ms, blending it with what is under it (the
+// adopted window faded in over the desktop 116 ms after adoption). Those
+// transitions settle 400 ms; moves and focus changes keep 100 ms.
+void AnimatedSettle(const char* what, void (*before)(GuardInputs&),
+                    void (*after)(GuardInputs&)) {
+  printf("animated transition, 400 ms: %s\n", what);
+  GuardInputs in = Good(10000 * kMs);
+  before(in);
+  SettleState s = Settled(in);
+  in.now_ns += 16 * kMs;
+  after(in);
+  uint64_t t0 = in.now_ns;
+  Run(in, s);
+  CHECK(!StepTo(in, s, t0 + 150 * kMs).show_game);
+  CHECK(!StepTo(in, s, t0 + 399 * kMs).show_game);
+  CHECK(StepTo(in, s, t0 + 400 * kMs).show_game);
+}
+
+void TestAnimatedSettle() {
+  AnimatedSettle(
+      "a cover closes (its fading ghost)",
+      [](GuardInputs& in) { Both(in, [](Snapshot& x) { x.occluded = true; }); },
+      [](GuardInputs& in) { Both(in, [](Snapshot& x) { x.occluded = false; }); });
+  AnimatedSettle(
+      "the target is restored from minimized (drawable again)",
+      [](GuardInputs& in) { Both(in, [](Snapshot& x) { x.window_alive = false; }); },
+      [](GuardInputs& in) { Both(in, [](Snapshot& x) { x.window_alive = true; }); });
+  AnimatedSettle(
+      "another window of the game adopted (it fades in)",
+      [](GuardInputs&) {},
+      [](GuardInputs& in) { Both(in, [](Snapshot& x) { x.target = 0x9999; }); });
+  printf("not animated, 100 ms: back in front by alt-tab\n");
+  GuardInputs in = Good(10000 * kMs);
+  Both(in, [](Snapshot& x) { x.foreground_is_game = false; });
+  SettleState s = Settled(in);
+  in.now_ns += 16 * kMs;
+  Both(in, [](Snapshot& x) { x.foreground_is_game = true; });
+  uint64_t t0 = in.now_ns;
+  Run(in, s);
+  CHECK(StepTo(in, s, t0 + 100 * kMs).show_game);
+
+  printf("animated transition, 400 ms: the source shown again (a restore "
+         "may have run while it was hidden)\n");
+  GuardInputs r = Good(10000 * kMs);
+  SettleState sr = Settled(r);
+  r.now_ns += 33 * kMs;
+  r.reshown = true;
+  Run(r, sr);
+  r.reshown = false;
+  uint64_t t1 = r.now_ns;
+  CHECK(!StepTo(r, sr, t1 + 399 * kMs).show_game);
+  CHECK(StepTo(r, sr, t1 + 400 * kMs).show_game);
 }
 
 // Codex 7: A at acquire, B at render, then A again
@@ -456,6 +513,55 @@ void TestFrameProvenance() {
   SettleState sf;
   CHECK(!StepTo(f, sf, 5300 * kMs).show_game);
   CHECK(StepTo(f, sf, 5300 * kMs).reason == Reason::kStaleFrame);
+  live_frames = true;
+
+  // Codex review 2: the last image a window paints after a move can arrive
+  // between the pre-acquire read and the render read of the change frame
+  printf("rule 8: a change seen before the acquire: an image presented after "
+         "that read counts\n");
+  live_frames = false;
+  GuardInputs a = Good(10000 * kMs);
+  SettleState sa = Settled(a);
+  uint64_t t = a.now_ns + 33 * kMs;
+  a.pre_ns = t - 5 * kMs;
+  a.now_ns = t;
+  Both(a, [](Snapshot& x) { x.client = R(200, 111, 1566, 879); });
+  a.frame.present_ns = t - 2 * kMs;  // after the pre read, before the render
+  Decide(a, sa);
+  a.pre_ns = 0;
+  CHECK(StepTo(a, sa, t + 200 * kMs).show_game);
+  printf("rule 8: a change seen only at render: an image from before that "
+         "read stays out\n");
+  GuardInputs b2 = Good(10000 * kMs);
+  SettleState sb2 = Settled(b2);
+  b2.now_ns += 33 * kMs;
+  b2.pre_ns = b2.now_ns - 5 * kMs;
+  b2.render.client = R(200, 111, 1566, 879);  // the pre read still saw A
+  b2.frame.present_ns = b2.now_ns - 2 * kMs;
+  Decide(b2, sb2);
+  b2.pre_ns = 0;
+  b2.pre.client = b2.render.client;
+  GuardDecision db = StepTo(b2, sb2, b2.now_ns + 200 * kMs);
+  CHECK(!db.show_game && db.reason == Reason::kStaleFrame);
+  printf("rule 8: the first frame (or a re-show): an image presented after "
+         "the matching pre read counts\n");
+  GuardInputs st = Good(5000 * kMs);
+  SettleState sst;
+  st.pre_ns = st.now_ns - 5 * kMs;
+  st.frame.present_ns = st.now_ns - 2 * kMs;
+  Decide(st, sst);
+  st.pre_ns = 0;
+  CHECK(StepTo(st, sst, 5200 * kMs).show_game);
+  GuardInputs rs = Good(10000 * kMs);
+  SettleState srs = Settled(rs);
+  rs.now_ns += 33 * kMs;
+  rs.reshown = true;
+  rs.pre_ns = rs.now_ns - 5 * kMs;
+  rs.frame.present_ns = rs.now_ns - 2 * kMs;
+  Decide(rs, srs);
+  rs.reshown = false;
+  rs.pre_ns = 0;
+  CHECK(StepTo(rs, srs, rs.now_ns + 450 * kMs).show_game);  // re-show: 400 ms
   live_frames = true;
 
   printf("rule 8: the capture holds no image -> BRB\n");
@@ -537,7 +643,8 @@ void TestSettle() {
     in.desktop_front = false;
   });
 
-  printf("rule 5: the change frame then steady inputs: game at +100 ms\n");
+  printf("rule 5: the change frame then steady inputs: the cover leaving "
+         "settles 400 ms\n");
   GuardInputs m = Good(10000 * kMs);
   SettleState sm = Settled(m);
   m.now_ns += 16 * kMs;
@@ -548,8 +655,8 @@ void TestSettle() {
   Both(m, [](Snapshot& x) { x.occluded = false; });
   m.now_ns = change + 16 * kMs;
   CHECK(!Run(m, sm).show_game);
-  CHECK(!StepTo(m, sm, change + 16 * kMs + 99 * kMs).show_game);
-  CHECK(StepTo(m, sm, change + 16 * kMs + 100 * kMs).show_game);
+  CHECK(!StepTo(m, sm, change + 16 * kMs + 399 * kMs).show_game);
+  CHECK(StepTo(m, sm, change + 16 * kMs + 400 * kMs).show_game);
 
   printf("rule 5: first frame after start settles\n");
   GuardInputs f = Good(5000 * kMs);
@@ -595,7 +702,7 @@ void TestSettle() {
   r.reshown = false;
   uint64_t reshown_at = r.now_ns;
   CHECK(!StepTo(r, sr, reshown_at + 99 * kMs).show_game);
-  CHECK(StepTo(r, sr, reshown_at + 100 * kMs).show_game);
+  CHECK(StepTo(r, sr, reshown_at + 400 * kMs).show_game);
   printf("rule 5: a clock going backwards settles\n");
   GuardInputs b = Good(10000 * kMs);
   SettleState sb = Settled(b);
@@ -743,6 +850,57 @@ void TestResolveTarget() {
   CHECK(ResolveTarget(h).gone);
 }
 
+// popup/RESULT.md Q3 design 3: EVT_DISPLAY_SOURCE_CHANGED per reason change
+void TestSourceEvent() {
+  using follow_window::ReasonKey;
+  using follow_window::ReasonNotifier;
+  printf("event payload: source, reason key, follow\n");
+  OBSDataAutoRelease brb = obs_data_create();
+  settings::FillFollowWindowSourceEvent(brb, false, ReasonKey(Reason::kOccluded));
+  std::string jb = obs_data_get_json(brb);
+  printf("  %s\n", jb.c_str());
+  CHECK(std::string(obs_data_get_string(brb, "source")) == "brb");
+  CHECK(std::string(obs_data_get_string(brb, "reason")) == "occluded");
+  CHECK(obs_data_get_bool(brb, "follow"));
+  OBSDataAutoRelease game = obs_data_create();
+  settings::FillFollowWindowSourceEvent(game, true, ReasonKey(Reason::kGame));
+  CHECK(std::string(obs_data_get_string(game, "source")) == "monitor");
+  CHECK(std::string(obs_data_get_string(game, "reason")) == "game");
+  CHECK(obs_data_get_bool(game, "follow"));
+
+  printf("event: once per reason change over a run of frames, never per "
+         "frame\n");
+  GuardInputs in = Good(10000 * kMs);
+  SettleState s;
+  ReasonNotifier n;
+  int sent = 0;
+  std::string keys;
+  auto frame = [&]() {
+    GuardDecision d = Run(in, s);
+    if (n.Changed(d.reason)) {
+      sent++;
+      keys += std::string(ReasonKey(d.reason)) + " ";
+    }
+  };
+  for (int i = 0; i < 30; i++) {  // settling, then game
+    in.now_ns += 10 * kMs;
+    frame();
+  }
+  Both(in, [](Snapshot& x) { x.occluded = true; });
+  for (int i = 0; i < 30; i++) {  // covered for 300 ms
+    in.now_ns += 10 * kMs;
+    frame();
+  }
+  Both(in, [](Snapshot& x) { x.occluded = false; });
+  for (int i = 0; i < 50; i++) {  // settling (400 ms), then game again
+    in.now_ns += 10 * kMs;
+    frame();
+  }
+  printf("  sent %d: %s\n", sent, keys.c_str());
+  CHECK(sent == 5);
+  CHECK(keys == "settling game occluded settling game ");
+}
+
 void TestFitInside() {
   using follow_window::FitInside;
   printf("crop placement: fit inside the canvas, centered\n");
@@ -769,10 +927,12 @@ int main(int, char**) {
   TestEachRule();
   TestRenderRecheck();
   TestRoundTrip();
+  TestAnimatedSettle();
   TestFrameProvenance();
   TestSettle();
   TestOccluder();
   TestResolveTarget();
+  TestSourceEvent();
   TestFitInside();
 
   printf(failures ? "FAILED (%d)\n" : "ALL PASSED\n", failures);

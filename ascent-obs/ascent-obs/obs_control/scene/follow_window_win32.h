@@ -12,17 +12,15 @@
 
 namespace follow_window {
 
-// Facts read once per frame, before the duplicator acquires.
+// One complete read of the followed window's facts, plus what the log and
+// the cost summary need.
 struct Probe {
-  uint64_t target = 0;  // the window followed for this frame
-  bool window_alive = false;
+  Snapshot snap;
   bool adopted = false;  // switched to another window of the game's pid
-  bool foreground_is_game = false;
-  bool occluded = false;
   uint32_t occluder_pid = 0;
   std::string occluder_class;
-  Rect client;   // the target's client rect, screen px
-  Rect monitor;  // the recorded monitor, screen px
+  const char* unknown_why = nullptr;  // set when !snap.complete
+  uint32_t unknown_error = 0;         // GetLastError() for unknown_why
   uint32_t walked = 0;    // windows looked at above the game
   uint64_t walk_ns = 0;   // cost of the occlusion walk
   uint64_t total_ns = 0;  // cost of the whole probe
@@ -35,11 +33,11 @@ public:
   uint32_t game_pid() const { return game_pid_; }
   uint64_t target() const { return target_; }
 
-  // rules 1, 2, 3 (monitor rect), 7, and the rect before acquire
-  Probe ReadBeforeAcquire();
-
-  // rule 4: the target's client rect now; empty when it can't be read
-  Rect ReadClientRect(uint64_t hwnd) const;
+  // rules 1, 2, 3, 7 and the client rect. |may_adopt|: the read before
+  // acquire may switch to the game's foreground window when the target is
+  // gone or draws nothing (rule 7); the read at render never switches, it
+  // reports the target as gone instead.
+  Probe Read(bool may_adopt);
 
 private:
   uint64_t target_;

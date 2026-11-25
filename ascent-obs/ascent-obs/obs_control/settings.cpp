@@ -230,11 +230,23 @@ bool settings::FollowWindowActive(const MonitorConfig& config) {
 settings::LaterStart settings::ReconcileLaterStart(
     const MonitorConfig& running, bool guarded,
     const MonitorConfig& requested) {
-  // STUB (tests first)
-  UNUSED_PARAMETER(running);
-  UNUSED_PARAMETER(guarded);
-  UNUSED_PARAMETER(requested);
-  return LaterStart::kKeep;
+  if (!FollowWindowActive(requested)) {
+    // never drops a guard: a running guard keeps its window
+    return LaterStart::kKeep;
+  }
+  if (!guarded) {
+    return LaterStart::kRebuildGuarded;
+  }
+  return requested.follow_window == running.follow_window
+             ? LaterStart::kKeep
+             : LaterStart::kRetarget;
+}
+
+void settings::FillFollowWindowSourceEvent(obs_data_t* out, bool show_game,
+                                           const char* reason) {
+  obs_data_set_string(out, "source", show_game ? "monitor" : "brb");
+  obs_data_set_string(out, "reason", reason ? reason : "unknown");
+  obs_data_set_bool(out, "follow", true);
 }
 
 void settings::FillMonitorCaptureSettings(obs_data_t* out,

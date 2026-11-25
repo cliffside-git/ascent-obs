@@ -116,16 +116,16 @@ struct TargetResolution {
 // minimized) adopt the foreground window when it is a drawable window of the
 // game's pid; else nothing to follow.
 inline TargetResolution ResolveTarget(const TargetFacts& f) {
-  // STUB (tests first): 1.4.0-pre rule, drawability not checked yet
   TargetResolution r;
-  if (f.target != 0 && f.target_alive) {
+  if (f.target != 0 && f.target_alive && f.target_drawable) {
     r.target = f.target;
     return r;
   }
   if (f.game_pid != 0 && f.foreground != 0 &&
-      f.foreground_pid == f.game_pid) {
+      f.foreground_pid == f.game_pid && f.foreground_drawable &&
+      f.foreground != f.target) {
     r.target = f.foreground;
-    r.adopted = f.foreground != f.target;
+    r.adopted = true;
     return r;
   }
   r.gone = true;
@@ -176,8 +176,8 @@ enum class Reason {
   kOccluded,             // rule 2
   kOffMonitor,           // rule 3
   kChangedSinceAcquire,  // rules 4 and 9
-  kSettling,             // rule 5
   kCaptureMismatch,      // rule 8: the image isn't the monitor
+  kSettling,             // rule 5
   kStaleFrame,           // rule 8: no new desktop image since the change
 };
 
@@ -198,6 +198,43 @@ inline const char* ReasonName(Reason r) {
   return "?";
 }
 
+// The reason as sent to the desktop in EVT_DISPLAY_SOURCE_CHANGED: a stable
+// key, unlike ReasonName (log text)
+inline const char* ReasonKey(Reason r) {
+  switch (r) {
+    case Reason::kGame: return "game";
+    case Reason::kUnknown: return "unknown";
+    case Reason::kWindowGone: return "window_gone";
+    case Reason::kDesktopUnfocused: return "desktop_unfocused";
+    case Reason::kNotForeground: return "not_foreground";
+    case Reason::kOccluded: return "occluded";
+    case Reason::kOffMonitor: return "off_monitor";
+    case Reason::kChangedSinceAcquire: return "changed_since_acquire";
+    case Reason::kSettling: return "settling";
+    case Reason::kCaptureMismatch: return "capture_mismatch";
+    case Reason::kStaleFrame: return "stale_frame";
+  }
+  return "unknown";
+}
+
+// Once per reason change, never per frame: Changed() is true for the first
+// decision and whenever the reason differs from the last one.
+class ReasonNotifier {
+public:
+  bool Changed(Reason r) {
+    if (primed_ && r == last_) {
+      return false;
+    }
+    primed_ = true;
+    last_ = r;
+    return true;
+  }
+
+private:
+  bool primed_ = false;
+  Reason last_ = Reason::kGame;
+};
+
 struct GuardInputs {
   Snapshot pre;     // read before the duplicator acquires this frame
   Snapshot render;  // read again at render
@@ -207,7 +244,8 @@ struct GuardInputs {
   // and its first frames may be stale
   bool reshown = false;
   FrameFacts frame;  // rule 8
-  uint64_t now_ns = 0;
+  uint64_t pre_ns = 0;  // when |pre| was read (before the acquire)
+  uint64_t now_ns = 0;  // when |render| was read
 };
 
 struct GuardDecision {
@@ -218,6 +256,13 @@ struct GuardDecision {
 
 // rule 5: BRB for this long after any input changes
 const uint64_t kSettleNs = 100000000ull;  // 100 ms
+// rule 5, animated transitions: DWM animates a window that opens, closes,
+// hides, minimizes or restores for ~200-300 ms, blending it with what lies
+// under it (VM r1: an adopted window faded in over the desktop 116 ms after
+// adoption; a closing cover leaves a fading ghost after it is gone). After a
+// cover goes away, the target (re)appears or changes, or the source is shown
+// again, BRB holds this long
+const uint64_t kAnimatedSettleNs = 400000000ull;  // 400 ms
 // no decision for this long counts as a change. A hidden source is caught
 // by GuardInputs::reshown; this only backs it up, so it sits well above
 // render lag (VM r1 at 150% had 57% lagged frames, gaps of 66-133 ms, and a
@@ -231,57 +276,89 @@ struct SettleState {
   bool frame_valid = false;
   Rect frame_area;
   uint64_t last_change_ns = 0;
+  uint64_t quiet_until_ns = 0;  // BRB (settling) until then
+  // rule 8: an image must be presented after this (the first read that saw
+  // the current state: the pre-acquire read when it already saw it, else
+  // the render read)
+  uint64_t fresh_after_ns = 0;
   uint64_t last_seen_ns = 0;
 };
 
 // Show BRB when any rule holds, else the monitor cropped to the client rect.
 // Updates |settle| (call once per rendered frame).
 inline GuardDecision Decide(const GuardInputs& in, SettleState& settle) {
-  // STUB (tests first): the ddbe2c6 rule on the new inputs. Only the
-  // pre-acquire read counts (plus the render rect); completeness and the
-  // frame are ignored.
   const Snapshot& pre = in.pre;
-  const bool on_monitor = Inside(pre.client, pre.monitor) &&
-                          Inside(in.render.client, pre.monitor);
+  const Snapshot& now = in.render;
+  const bool on_monitor =
+      Inside(pre.client, pre.monitor) && Inside(now.client, now.monitor);
+
+  // rule 9: a difference between the two reads of this frame is a change
+  // too, so A at acquire, B at render, then A again settles (A->B->A)
   const bool changed =
-      !settle.primed || settle.last.window_alive != pre.window_alive ||
-      settle.desktop_front != in.desktop_front ||
-      settle.last.foreground_is_game != pre.foreground_is_game ||
-      settle.last.occluded != pre.occluded ||
-      Inside(settle.last.client, settle.last.monitor) != on_monitor ||
-      settle.last.client != pre.client || in.reshown ||
+      !settle.primed || pre != now || settle.last != pre ||
+      settle.last != now || settle.desktop_front != in.desktop_front ||
+      settle.frame_valid != in.frame.valid ||
+      settle.frame_area != in.frame.area || in.reshown ||
       in.now_ns < settle.last_seen_ns ||
       in.now_ns - settle.last_seen_ns > kRenderGapNs;
   if (changed) {
+    const Snapshot& was = settle.last;
+    const bool animated =
+        settle.primed &&
+        ((was.occluded && (!pre.occluded || !now.occluded)) ||
+         (!was.window_alive && (pre.window_alive || now.window_alive)) ||
+         was.target != pre.target || was.target != now.target ||
+         in.reshown);
+    const uint64_t until =
+        in.now_ns + (animated ? kAnimatedSettleNs : kSettleNs);
+    const bool clock_back = in.now_ns < settle.last_seen_ns;
+    if (clock_back || until > settle.quiet_until_ns) {
+      settle.quiet_until_ns = until;
+    }
     settle.last_change_ns = in.now_ns;
+    // when both reads of this frame agree, the window state was already
+    // what it is now at the pre-acquire read, so an image presented after
+    // that read shows it (also on the first frame and after a re-show, when
+    // the capture restarts). A change seen only at render counts from there.
+    const bool seen_before_acquire =
+        pre == now && in.pre_ns != 0 && in.pre_ns <= in.now_ns;
+    settle.fresh_after_ns = seen_before_acquire ? in.pre_ns : in.now_ns;
   }
   settle.primed = true;
-  settle.last = pre;
+  settle.last = now;
   settle.desktop_front = in.desktop_front;
+  settle.frame_valid = in.frame.valid;
+  settle.frame_area = in.frame.area;
   settle.last_seen_ns = in.now_ns;
 
   GuardDecision d;
-  if (!pre.window_alive) {
+  if (!pre.complete || !now.complete) {
+    d.reason = Reason::kUnknown;
+  } else if (!pre.window_alive || !now.window_alive) {
     d.reason = Reason::kWindowGone;
   } else if (!in.desktop_front) {
     d.reason = Reason::kDesktopUnfocused;
-  } else if (!pre.foreground_is_game) {
+  } else if (!pre.foreground_is_game || !now.foreground_is_game) {
     d.reason = Reason::kNotForeground;
-  } else if (pre.occluded) {
+  } else if (pre.occluded || now.occluded) {
     d.reason = Reason::kOccluded;
   } else if (!on_monitor) {
     d.reason = Reason::kOffMonitor;
-  } else if (pre.client != in.render.client) {
+  } else if (pre != now) {
     d.reason = Reason::kChangedSinceAcquire;
-  } else if (in.now_ns - settle.last_change_ns < kSettleNs) {
+  } else if (!in.frame.valid || in.frame.area != now.monitor) {
+    d.reason = Reason::kCaptureMismatch;
+  } else if (in.now_ns < settle.quiet_until_ns) {
     d.reason = Reason::kSettling;
+  } else if (in.frame.present_ns <= settle.fresh_after_ns) {
+    d.reason = Reason::kStaleFrame;
   } else {
     d.show_game = true;
     d.reason = Reason::kGame;
-    d.crop.left = in.render.client.left - pre.monitor.left;
-    d.crop.top = in.render.client.top - pre.monitor.top;
-    d.crop.right = in.render.client.right - pre.monitor.left;
-    d.crop.bottom = in.render.client.bottom - pre.monitor.top;
+    d.crop.left = now.client.left - now.monitor.left;
+    d.crop.top = now.client.top - now.monitor.top;
+    d.crop.right = now.client.right - now.monitor.left;
+    d.crop.bottom = now.client.bottom - now.monitor.top;
   }
   return d;
 }

@@ -55,6 +55,19 @@ uint32_t PidOf(HWND hwnd) {
   return pid;
 }
 
+bool Cloaked(HWND hwnd) {
+  DWORD cloaked = 0;
+  return SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked,
+                                         sizeof(cloaked))) &&
+         cloaked != 0;
+}
+
+// the window's client area shows its own pixels: visible, not minimized,
+// not cloaked (a cloaked window keeps its rect but DWM draws nothing)
+bool Drawable(HWND hwnd) {
+  return hwnd && IsWindowVisible(hwnd) && !IsIconic(hwnd) && !Cloaked(hwnd);
+}
+
 Rect ClientRect(HWND hwnd) {
   Rect r;
   RECT client;
@@ -69,44 +82,48 @@ Rect ClientRect(HWND hwnd) {
   return r;
 }
 
-Rect FrameRect(HWND hwnd) {
-  Rect r;
+bool FrameRect(HWND hwnd, Rect* r) {
   RECT bounds;
   if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS,
                                       &bounds, sizeof(bounds))) ||
       GetWindowRect(hwnd, &bounds)) {
-    r.left = bounds.left;
-    r.top = bounds.top;
-    r.right = bounds.right;
-    r.bottom = bounds.bottom;
+    r->left = bounds.left;
+    r->top = bounds.top;
+    r->right = bounds.right;
+    r->bottom = bounds.bottom;
+    return true;
   }
-  return r;
+  return false;
 }
+
+enum class ReadResult { kSkip, kFacts, kFailed };
 
 // Facts for one window above the game. Cheap facts first: a window that is
 // invisible or doesn't overlap is not an occluder whatever the rest says, so
-// the rest is read only for windows that could be one.
-bool ReadFacts(HWND hwnd, const Rect& game_client, WindowFacts* f) {
+// the rest is read only for windows that could be one. A visible window
+// whose rect can't be read is kFailed (unknown), unless it is gone.
+ReadResult ReadFacts(HWND hwnd, const Rect& game_client, WindowFacts* f) {
   f->visible = IsWindowVisible(hwnd) != FALSE;
   if (!f->visible) {
-    return false;
+    return ReadResult::kSkip;
   }
-  f->rect = FrameRect(hwnd);
+  if (!FrameRect(hwnd, &f->rect)) {
+    return IsWindow(hwnd) ? ReadResult::kFailed : ReadResult::kSkip;
+  }
   if (!Overlaps(f->rect, game_client)) {
-    return false;
+    return ReadResult::kSkip;
   }
   f->pid = PidOf(hwnd);
-  DWORD cloaked = 0;
-  f->cloaked = SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked,
-                                               sizeof(cloaked))) &&
-               cloaked != 0;
+  // failed reads below count as "draws" (not cloaked, not click-through,
+  // not excluded), so a failure can only make a window an occluder
+  f->cloaked = Cloaked(hwnd);
   f->minimized = IsIconic(hwnd) != FALSE;
   f->click_through =
       (GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TRANSPARENT) != 0;
   DWORD affinity = 0;
   f->excluded_from_capture = GetWindowDisplayAffinity(hwnd, &affinity) &&
                              affinity == WDA_EXCLUDEFROMCAPTURE;
-  return true;
+  return ReadResult::kFacts;
 }
 
 std::string ClassOf(HWND hwnd) {
@@ -125,10 +142,12 @@ Win32Facts::Win32Facts(uint64_t hwnd, uint32_t monitor_handle)
   }
 }
 
-Probe Win32Facts::ReadBeforeAcquire() {
+Probe Win32Facts::Read(bool may_adopt) {
   uint64_t start = os_gettime_ns();
   DpiScope dpi;
   Probe p;
+  Snapshot& s = p.snap;
+  s.complete = true;
 
   HWND foreground = GetForegroundWindow();
   uint32_t foreground_pid = PidOf(foreground);
@@ -137,62 +156,85 @@ Probe Win32Facts::ReadBeforeAcquire() {
   TargetFacts tf;
   tf.target = target_;
   HWND current = (HWND)(uintptr_t)target_;
-  tf.target_alive = target_ != 0 && IsWindow(current) &&
-                    PidOf(current) == game_pid_ && game_pid_ != 0;
+  tf.target_alive = target_ != 0 && game_pid_ != 0 && IsWindow(current) &&
+                    PidOf(current) == game_pid_;
+  tf.target_drawable = tf.target_alive && Drawable(current);
   tf.game_pid = game_pid_;
   tf.foreground = (uint64_t)(uintptr_t)foreground;
   tf.foreground_pid = foreground_pid;
+  tf.foreground_drawable = Drawable(foreground);
   TargetResolution res = ResolveTarget(tf);
-  if (res.adopted) {
+  if (res.adopted && may_adopt) {
     target_ = res.target;
+    p.adopted = true;
   }
-  p.target = res.target;
-  p.adopted = res.adopted;
-  p.window_alive = !res.gone;
+  s.target = target_;
+  s.window_alive = !res.gone && res.target == target_;
 
   // rule 1
-  p.foreground_is_game = foreground && game_pid_ != 0 &&
+  s.foreground_is_game = foreground && game_pid_ != 0 &&
                          foreground_pid == game_pid_;
 
-  // rule 3: the monitor; the client rect is the rect before acquire (rule 4)
+  // rule 3: the monitor
   MONITORINFO mi;
   mi.cbSize = sizeof(mi);
   if (GetMonitorInfoW((HMONITOR)(uintptr_t)monitor_handle_, &mi)) {
-    p.monitor.left = mi.rcMonitor.left;
-    p.monitor.top = mi.rcMonitor.top;
-    p.monitor.right = mi.rcMonitor.right;
-    p.monitor.bottom = mi.rcMonitor.bottom;
+    s.monitor.left = mi.rcMonitor.left;
+    s.monitor.top = mi.rcMonitor.top;
+    s.monitor.right = mi.rcMonitor.right;
+    s.monitor.bottom = mi.rcMonitor.bottom;
+  } else {
+    s.complete = false;
+    p.unknown_why = "monitor read failed";
+    p.unknown_error = GetLastError();
   }
 
-  if (p.window_alive) {
-    HWND game = (HWND)(uintptr_t)p.target;
-    p.client = ClientRect(game);
+  if (s.window_alive) {
+    HWND game = (HWND)(uintptr_t)target_;
+    s.client = ClientRect(game);
 
-    // rule 2: walk the windows above the game, nearest first
+    // rule 2: walk the windows above the game, nearest first. A walk that
+    // doesn't reach the top (limit, a window gone mid-walk, a failed read)
+    // is unknown, never "uncovered"
     uint64_t walk_start = os_gettime_ns();
+    SetLastError(ERROR_SUCCESS);
     HWND above = GetWindow(game, GW_HWNDPREV);
-    while (above && p.walked < kWalkLimit) {
-      p.walked++;
+    while (above) {
+      if (++p.walked > kWalkLimit) {
+        s.complete = false;
+        p.unknown_why = "z-order walk over the limit";
+        break;
+      }
       WindowFacts f;
-      if (ReadFacts(above, p.client, &f) &&
-          IsOccluder(game_pid_, p.client, f)) {
-        p.occluded = true;
+      ReadResult r = ReadFacts(above, s.client, &f);
+      if (r == ReadResult::kFailed) {
+        s.complete = false;
+        p.unknown_why = "a window above could not be read";
+        p.unknown_error = GetLastError();
+        break;
+      }
+      if (r == ReadResult::kFacts && IsOccluder(game_pid_, s.client, f)) {
+        s.occluded = true;
         p.occluder_pid = f.pid;
         p.occluder_class = ClassOf(above);
         break;
       }
+      SetLastError(ERROR_SUCCESS);
       above = GetWindow(above, GW_HWNDPREV);
+    }
+    if (!above && s.complete && !s.occluded) {
+      DWORD error = GetLastError();
+      if (error != ERROR_SUCCESS) {
+        s.complete = false;
+        p.unknown_why = "z-order walk broke off";
+        p.unknown_error = error;
+      }
     }
     p.walk_ns = os_gettime_ns() - walk_start;
   }
 
   p.total_ns = os_gettime_ns() - start;
   return p;
-}
-
-Rect Win32Facts::ReadClientRect(uint64_t hwnd) const {
-  DpiScope dpi;
-  return ClientRect((HWND)(uintptr_t)hwnd);
 }
 
 }  // namespace follow_window
