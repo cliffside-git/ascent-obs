@@ -174,28 +174,50 @@ bool settings::ParseMonitorBrbWhenUnfocused(obs_data_t* monitor_settings) {
 }
 
 uint64_t settings::ParseMonitorFollowWindow(obs_data_t* monitor_settings) {
-  UNUSED_PARAMETER(monitor_settings);
-  return 0;  // STUB
+  if (!monitor_settings) {
+    return 0;
+  }
+  obs_data_item_t* item =
+      obs_data_item_byname(monitor_settings, kSettingsMonitorFollowWindow);
+  if (!item) {
+    return 0;
+  }
+  bool has_value = obs_data_item_has_user_value(item);
+  bool is_int = obs_data_item_gettype(item) == OBS_DATA_NUMBER &&
+                obs_data_item_numtype(item) == OBS_DATA_NUM_INT;
+  long long hwnd = is_int ? obs_data_item_get_int(item) : 0;
+  obs_data_item_release(&item);
+  if (!has_value) {
+    return 0;
+  }
+  // HWNDs are 32-bit values; anything else is not a window
+  const long long kMaxHwnd = 0xFFFFFFFFll;
+  if (!is_int) {
+    blog(LOG_WARNING, "invalid follow_window (not an integer), ignored");
+    return 0;
+  }
+  if (hwnd < 0 || hwnd > kMaxHwnd) {
+    blog(LOG_WARNING, "invalid follow_window %lld, ignored", hwnd);
+    return 0;
+  }
+  return (uint64_t)hwnd;
 }
 
 bool settings::FollowWindowActive(uint64_t follow_window, int method,
                                   bool brb_when_unfocused) {
-  UNUSED_PARAMETER(follow_window);
-  UNUSED_PARAMETER(method);
-  UNUSED_PARAMETER(brb_when_unfocused);
-  return false;  // STUB
+  const int kMethodDxgi = 1;
+  return follow_window != 0 && method == kMethodDxgi && brb_when_unfocused;
 }
 
 void settings::FillMonitorCaptureSettings(obs_data_t* out,
                                           uint32_t monitor_handle,
                                           int monitor_index, bool cursor,
                                           int method) {
-  UNUSED_PARAMETER(out);
-  UNUSED_PARAMETER(monitor_handle);
-  UNUSED_PARAMETER(monitor_index);
-  UNUSED_PARAMETER(cursor);
-  UNUSED_PARAMETER(method);
-  // STUB
+  obs_data_set_int(out, "monitor_handle", monitor_handle);
+  obs_data_set_int(out, "monitor_index", monitor_index);
+  obs_data_set_bool(out, "capture_cursor", cursor);
+  // METHOD_AUTO = 0, METHOD_DXGI = 1, METHOD_WGC =2
+  obs_data_set_int(out, "method", method);
 }
 
 bool settings::IsMonitorPrimaryWithBrb(bool brb_when_unfocused,

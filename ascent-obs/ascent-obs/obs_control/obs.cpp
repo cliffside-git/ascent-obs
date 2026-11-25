@@ -1463,6 +1463,7 @@ bool OBS::InitMonitorSource(OBSData& monitor_setting, OBSData& error_result) {
 
   if (monitor_source_.get()) {
     blog(LOG_WARNING, "init monitor source: monitor source already created");
+    monitor_source_->UpdateFollowWindow(monitor_setting);
     return true;
   }
 
@@ -1766,6 +1767,8 @@ void OBS::UpdateSourcesVisiblity(bool game_in_foreground,
          "monitor primary: game foreground=%d minimized=%d -> showing %s",
          save_game_in_foreground, is_minimized,
          show_monitor ? "monitor" : "brb");
+    // follow-window mode ORs the same state into its per-frame guard
+    monitor_source_->SetDesktopFront(show_monitor);
     // hide before show, so no frame mixes the desktop into BRB
     if (show_monitor) {
       brb_source_->SetVisible(false);
@@ -1880,6 +1883,7 @@ void OBS::OnBlackTextureDetected(OBSDisplayTester::TestSouceType type) {
         auto monitor_id = monitor_source_->monitor_id();
         auto monitor_handle = monitor_source_->monitor_handle();
         auto force = monitor_source_->force();
+        auto follow_window = monitor_source_->follow_window();
 
         monitor_source_.reset(new MonitorSource(this));
 
@@ -1887,7 +1891,8 @@ void OBS::OnBlackTextureDetected(OBSDisplayTester::TestSouceType type) {
           monitor_id,
           monitor_handle,
           scene_->get_scene(),
-          force);
+          force,
+          follow_window);
 
         monitor_source_->SetVisible(true);
         return;

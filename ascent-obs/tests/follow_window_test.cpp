@@ -154,6 +154,18 @@ SettleState Settled(const GuardInputs& in) {
   return s;
 }
 
+// renders frames every 10 ms (steady inputs) up to |until|; returns the
+// decision of the frame at |until|
+GuardDecision StepTo(GuardInputs& in, SettleState& s, uint64_t until) {
+  GuardDecision d;
+  while (in.now_ns + 10 * kMs < until) {
+    in.now_ns += 10 * kMs;
+    Decide(in, s);
+  }
+  in.now_ns = until;
+  return Decide(in, s);
+}
+
 void TestSteadyGame() {
   printf("steady, in front, uncovered, on monitor -> game, crop = client\n");
   GuardInputs in = Good(10000 * kMs);
@@ -302,13 +314,10 @@ void TestSettle() {
   in.now_ns = back;
   GuardDecision d = Decide(in, s);
   CHECK(!d.show_game && d.reason == Reason::kSettling);
-  in.now_ns = back + 33 * kMs;  // P3 saw the stale frame 2 ticks later
-  d = Decide(in, s);
+  d = StepTo(in, s, back + 33 * kMs);  // P3 saw the stale frame 2 ticks later
   CHECK(!d.show_game && d.reason == Reason::kSettling);
-  in.now_ns = back + 99 * kMs;
-  CHECK(!Decide(in, s).show_game);
-  in.now_ns = back + 100 * kMs;
-  CHECK(Decide(in, s).show_game);
+  CHECK(!StepTo(in, s, back + 99 * kMs).show_game);
+  CHECK(StepTo(in, s, back + 100 * kMs).show_game);
 
   SettleAfter("an occluder appears", [](GuardInputs& in) { in.occluded = true; });
   SettleAfter("back on the monitor", [](GuardInputs& in) {
@@ -328,10 +337,8 @@ void TestSettle() {
   m.occluded = false;  // cover leaves on the next frame: that is a change too
   m.now_ns = change + 16 * kMs;
   CHECK(!Decide(m, sm).show_game);
-  m.now_ns = change + 16 * kMs + 99 * kMs;
-  CHECK(!Decide(m, sm).show_game);
-  m.now_ns = change + 16 * kMs + 100 * kMs;
-  CHECK(Decide(m, sm).show_game);
+  CHECK(!StepTo(m, sm, change + 16 * kMs + 99 * kMs).show_game);
+  CHECK(StepTo(m, sm, change + 16 * kMs + 100 * kMs).show_game);
 
   printf("rule 5: first frame after start settles\n");
   GuardInputs f = Good(5000 * kMs);

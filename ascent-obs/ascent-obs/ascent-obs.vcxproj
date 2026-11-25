@@ -358,6 +358,9 @@ xcopy /Y  $(TargetPath) $(SolutionDir)runtime\bin\64bit</Command>
     <ClInclude Include="obs_control\record_output.h" />
     <ClInclude Include="obs_control\replay_output.h" />
     <ClInclude Include="obs_control\scene\brb_source.h" />
+    <ClInclude Include="obs_control\scene\follow_window_filter.h" />
+    <ClInclude Include="obs_control\scene\follow_window_guard.h" />
+    <ClInclude Include="obs_control\scene\follow_window_win32.h" />
     <ClInclude Include="obs_control\scene\game_audio_capture_source.h" />
     <ClInclude Include="obs_control\scene\game_capture_source.h" />
     <ClInclude Include="obs_control\scene\game_capture_source_delegate.h" />
@@ -403,6 +406,8 @@ xcopy /Y  $(TargetPath) $(SolutionDir)runtime\bin\64bit</Command>
     <ClCompile Include="obs_control\record_output.cpp" />
     <ClCompile Include="obs_control\replay_output.cpp" />
     <ClCompile Include="obs_control\scene\brb_source.cpp" />
+    <ClCompile Include="obs_control\scene\follow_window_filter.cpp" />
+    <ClCompile Include="obs_control\scene\follow_window_win32.cpp" />
     <ClCompile Include="obs_control\scene\game_capture_source.cpp" />
     <ClCompile Include="obs_control\scene\generic_obs_source.cpp" />
     <ClCompile Include="obs_control\scene\monitor_source.cpp" />

@@ -1,4 +1,5 @@
 #include "obs_control/scene/monitor_source.h"
+#include "obs_control/scene/follow_window_filter.h"
 #include "obs_control/settings.h"
 #include <map>
 #include <windows.h>
@@ -96,18 +97,95 @@ bool MonitorSource::Create(OBSData& data, obs_scene_t* scene,
     return false;
   }
 
+  ApplyFollowWindow(settings::ParseMonitorFollowWindow(data));
+
   SetVisible(visible);
   return true;
+}
+
+MonitorSource::~MonitorSource() {
+  RemoveFollowFilter();
+}
+
+void MonitorSource::UpdateFollowWindow(OBSData& data) {
+  if (data == nullptr || !IsEnabled(data)) {
+    return;
+  }
+  uint64_t follow_window = settings::ParseMonitorFollowWindow(data);
+  if (follow_window == follow_window_) {
+    return;
+  }
+  blog(LOG_INFO, "follow-window: START changes the window 0x%llx -> 0x%llx",
+       (unsigned long long)follow_window_,
+       (unsigned long long)follow_window);
+  // the running source keeps its method and BRB mode; the gate reads them
+  ApplyFollowWindow(follow_window);
+}
+
+void MonitorSource::ApplyFollowWindow(uint64_t follow_window) {
+  RemoveFollowFilter();
+  follow_window_ = follow_window;
+  if (follow_window == 0) {
+    return;
+  }
+
+  if (!settings::FollowWindowActive(follow_window, method_,
+                                    brb_when_unfocused_)) {
+    blog(LOG_WARNING,
+         "follow_window 0x%llx ignored: needs method 1 (DXGI) and "
+         "brb_when_unfocused (method %d brb_when_unfocused %d)",
+         (unsigned long long)follow_window, method_, brb_when_unfocused_);
+    return;
+  }
+
+  if (!source()) {
+    return;
+  }
+
+  follow_filter_ = ::follow_window::CreateFilter(follow_window, monitor_handle_);
+  if (!follow_filter_) {
+    blog(LOG_ERROR, "follow-window: failed to create the filter");
+    return;
+  }
+  obs_source_filter_add(source(), follow_filter_);
+}
+
+void MonitorSource::RemoveFollowFilter() {
+  if (!follow_filter_) {
+    return;
+  }
+  if (source()) {
+    obs_source_filter_remove(source(), follow_filter_);
+  }
+  obs_source_release(follow_filter_);
+  follow_filter_ = nullptr;
+}
+
+void MonitorSource::SetDesktopFront(bool front) {
+  ::follow_window::SetDesktopFront(follow_filter_, front);
 }
 
 bool MonitorSource::CreateCompatibility(int monitor_id,
                                         uint32_t monitor_handle,
                                         obs_scene_t* scene,
-                                        bool force) {
+                                        bool force,
+                                        uint64_t follow_window) {
   force_ = force;
   monitor_handle_ = monitor_handle;
   monitor_index_ = monitor_id;
-  return CreateMonitorsSource(scene, true);
+  if (!CreateMonitorsSource(scene, true)) {
+    return false;
+  }
+  if (follow_window != 0 && source()) {
+    // the replaced source passed the follow-window gate; never fall back to
+    // the whole monitor
+    follow_window_ = follow_window;
+    follow_filter_ = ::follow_window::CreateFilter(follow_window, monitor_handle_);
+    if (follow_filter_) {
+      obs_source_filter_add(source(), follow_filter_);
+    }
+  }
+  return true;
 }
 
 bool MonitorSource::CreateMonitorsSource(obs_scene_t* scene,
@@ -116,11 +194,8 @@ bool MonitorSource::CreateMonitorsSource(obs_scene_t* scene,
   //MessageBox(NULL, L"MonitorSource", L"MonitorSource", 0);
 
   obs_data_t *moitor_settings = obs_data_create();
-  obs_data_set_int(moitor_settings, "monitor_handle", monitor_handle_);
-  obs_data_set_int(moitor_settings, "monitor_index", monitor_index_);
-  obs_data_set_bool(moitor_settings, "capture_cursor", cursor_); 
-  // METHOD_AUTO = 0, METHOD_DXGI = 1, METHOD_WGC =2
-  obs_data_set_int(moitor_settings, "method", method_);
+  settings::FillMonitorCaptureSettings(moitor_settings, monitor_handle_,
+                                       monitor_index_, cursor_, method_);
 
   source_.reset(new SourceContext(obs_source_create(
       !compatible ?"monitor_capture" :"monitor_capture_low",

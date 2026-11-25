@@ -35,14 +35,21 @@ struct Rect {
 // Whether two rects share at least one pixel. Touching edges don't; an empty
 // rect never does.
 inline bool Overlaps(const Rect& a, const Rect& b) {
-  (void)a; (void)b;
-  return false;  // STUB
+  if (a.empty() || b.empty()) {
+    return false;
+  }
+  int32_t l = a.left > b.left ? a.left : b.left;
+  int32_t r = a.right < b.right ? a.right : b.right;
+  int32_t t = a.top > b.top ? a.top : b.top;
+  int32_t btm = a.bottom < b.bottom ? a.bottom : b.bottom;
+  return l < r && t < btm;
 }
 
 // |inner| is non-empty and lies fully inside |outer|.
 inline bool Inside(const Rect& inner, const Rect& outer) {
-  (void)inner; (void)outer;
-  return true;  // STUB
+  return !inner.empty() && inner.left >= outer.left &&
+         inner.top >= outer.top && inner.right <= outer.right &&
+         inner.bottom <= outer.bottom;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,16 +75,21 @@ struct WindowFacts {
 // edge included). The taskbar is an ordinary window here: it counts.
 inline bool IsOccluder(uint32_t game_pid, const Rect& game_client,
                        const WindowFacts& w) {
-  (void)game_pid; (void)game_client; (void)w;
-  return false;  // STUB
+  return w.pid != game_pid && w.visible && !w.cloaked && !w.minimized &&
+         !w.click_through && !w.excluded_from_capture &&
+         Overlaps(w.rect, game_client);
 }
 
 // Index of the first occluder in |above| (nearest the game first or top
 // first, the caller's order), or -1.
 inline int FirstOccluder(uint32_t game_pid, const Rect& game_client,
                          const std::vector<WindowFacts>& above) {
-  (void)game_pid; (void)game_client; (void)above;
-  return -1;  // STUB
+  for (size_t i = 0; i < above.size(); i++) {
+    if (IsOccluder(game_pid, game_client, above[i])) {
+      return (int)i;
+    }
+  }
+  return -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +111,17 @@ struct TargetResolution {
 
 inline TargetResolution ResolveTarget(const TargetFacts& f) {
   TargetResolution r;
-  r.target = f.target;  // STUB
+  if (f.target != 0 && f.target_alive) {
+    r.target = f.target;
+    return r;
+  }
+  if (f.game_pid != 0 && f.foreground != 0 &&
+      f.foreground_pid == f.game_pid) {
+    r.target = f.foreground;
+    r.adopted = f.foreground != f.target;
+    return r;
+  }
+  r.gone = true;
   return r;
 }
 
@@ -170,12 +192,52 @@ struct SettleState {
 // Show BRB when any rule holds, else the monitor cropped to the client rect.
 // Updates |settle| (call once per rendered frame).
 inline GuardDecision Decide(const GuardInputs& in, SettleState& settle) {
-  // STUB: today's behaviour, always the whole monitor
-  (void)settle;
+  const bool on_monitor = Inside(in.rect_before_acquire, in.monitor) &&
+                          Inside(in.rect_at_render, in.monitor);
+
+  const bool changed =
+      !settle.primed || settle.window_alive != in.window_alive ||
+      settle.desktop_front != in.desktop_front ||
+      settle.foreground_is_game != in.foreground_is_game ||
+      settle.occluded != in.occluded || settle.on_monitor != on_monitor ||
+      settle.rect != in.rect_before_acquire ||
+      in.now_ns < settle.last_seen_ns ||
+      in.now_ns - settle.last_seen_ns > kRenderGapNs;
+  if (changed) {
+    settle.last_change_ns = in.now_ns;
+  }
+  settle.primed = true;
+  settle.window_alive = in.window_alive;
+  settle.desktop_front = in.desktop_front;
+  settle.foreground_is_game = in.foreground_is_game;
+  settle.occluded = in.occluded;
+  settle.on_monitor = on_monitor;
+  settle.rect = in.rect_before_acquire;
+  settle.last_seen_ns = in.now_ns;
+
   GuardDecision d;
-  d.show_game = true;
-  d.reason = Reason::kGame;
-  d.crop = in.monitor;
+  if (!in.window_alive) {
+    d.reason = Reason::kWindowGone;
+  } else if (!in.desktop_front) {
+    d.reason = Reason::kDesktopUnfocused;
+  } else if (!in.foreground_is_game) {
+    d.reason = Reason::kNotForeground;
+  } else if (in.occluded) {
+    d.reason = Reason::kOccluded;
+  } else if (!on_monitor) {
+    d.reason = Reason::kOffMonitor;
+  } else if (in.rect_before_acquire != in.rect_at_render) {
+    d.reason = Reason::kRectMoved;
+  } else if (in.now_ns - settle.last_change_ns < kSettleNs) {
+    d.reason = Reason::kSettling;
+  } else {
+    d.show_game = true;
+    d.reason = Reason::kGame;
+    d.crop.left = in.rect_at_render.left - in.monitor.left;
+    d.crop.top = in.rect_at_render.top - in.monitor.top;
+    d.crop.right = in.rect_at_render.right - in.monitor.left;
+    d.crop.bottom = in.rect_at_render.bottom - in.monitor.top;
+  }
   return d;
 }
 
@@ -189,8 +251,16 @@ struct Placement {
 
 inline Placement FitInside(int32_t src_w, int32_t src_h, uint32_t canvas_w,
                            uint32_t canvas_h) {
-  (void)src_w; (void)src_h; (void)canvas_w; (void)canvas_h;
-  return Placement();  // STUB
+  Placement p;
+  if (src_w <= 0 || src_h <= 0) {
+    return p;
+  }
+  float sx = (float)canvas_w / (float)src_w;
+  float sy = (float)canvas_h / (float)src_h;
+  p.scale = sx < sy ? sx : sy;
+  p.x = ((float)canvas_w - (float)src_w * p.scale) / 2.f;
+  p.y = ((float)canvas_h - (float)src_h * p.scale) / 2.f;
+  return p;
 }
 
 }  // namespace follow_window
