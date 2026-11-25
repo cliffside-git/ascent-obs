@@ -17,6 +17,8 @@ const uint32_t kWalkLimit = 4096;
 #define WDA_EXCLUDEFROMCAPTURE 0x00000011
 #endif
 
+static_assert(kLwaAlpha == LWA_ALPHA, "follow_window_guard.h kLwaAlpha");
+
 // SetThreadDpiAwarenessContext exists from Windows 10 1607; load it so the
 // recorder still starts where it doesn't
 typedef HANDLE(WINAPI* SetThreadDpiAwarenessContextFn)(HANDLE);
@@ -115,11 +117,20 @@ ReadResult ReadFacts(HWND hwnd, const Rect& game_client, WindowFacts* f) {
   }
   f->pid = PidOf(hwnd);
   // failed reads below count as "draws" (not cloaked, not click-through,
-  // not excluded), so a failure can only make a window an occluder
+  // not excluded, not zero alpha), so a failure can only make a window an
+  // occluder
   f->cloaked = Cloaked(hwnd);
   f->minimized = IsIconic(hwnd) != FALSE;
-  f->click_through =
-      (GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TRANSPARENT) != 0;
+  const LONG ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+  f->click_through = (ex_style & WS_EX_TRANSPARENT) != 0;
+  if ((ex_style & WS_EX_LAYERED) != 0) {
+    // fails for an UpdateLayeredWindow window: opacity unknown, it draws
+    BYTE alpha = 255;
+    DWORD flags = 0;
+    const bool read_ok =
+        GetLayeredWindowAttributes(hwnd, nullptr, &alpha, &flags) != FALSE;
+    f->zero_alpha = ZeroAlpha(read_ok, alpha, flags);
+  }
   DWORD affinity = 0;
   f->excluded_from_capture = GetWindowDisplayAffinity(hwnd, &affinity) &&
                              affinity == WDA_EXCLUDEFROMCAPTURE;

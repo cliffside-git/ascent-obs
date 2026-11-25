@@ -65,18 +65,34 @@ struct WindowFacts {
   bool minimized = false;
   bool click_through = false;          // WS_EX_TRANSPARENT
   bool excluded_from_capture = false;  // WDA_EXCLUDEFROMCAPTURE
+  // A layered window that GetLayeredWindowAttributes positively reports as
+  // LWA_ALPHA with alpha 0. False when the call fails (an
+  // UpdateLayeredWindow window): its opacity is unknown, so it may draw.
+  bool zero_alpha = false;
   std::string class_name;
 };
 
+// LWA_ALPHA from winuser.h (follow_window_win32.cpp checks they agree).
+const uint32_t kLwaAlpha = 0x2;
+
+// zero_alpha from one GetLayeredWindowAttributes call: |read_ok| is its
+// result, |alpha| and |flags| what it wrote. Only a successful read that
+// says LWA_ALPHA with alpha 0 counts; a failed read, a nonzero alpha or a
+// colour key alone leave the window drawing.
+inline bool ZeroAlpha(bool read_ok, uint8_t alpha, uint32_t flags) {
+  return read_ok && (flags & kLwaAlpha) != 0 && alpha == 0;
+}
+
 // A window above the game puts another program's pixels over the game's
 // client rect. Not occluders: the game's own pid, windows that draw nothing
-// (invisible, cloaked, minimized, zero area), click-through overlays,
-// windows excluded from capture, windows that don't overlap (touching an
-// edge included). The taskbar is an ordinary window here: it counts.
+// (invisible, cloaked, minimized, zero area, layered with alpha 0),
+// click-through overlays, windows excluded from capture, windows that don't
+// overlap (touching an edge included). The taskbar is an ordinary window
+// here: it counts.
 inline bool IsOccluder(uint32_t game_pid, const Rect& game_client,
                        const WindowFacts& w) {
   return w.pid != game_pid && w.visible && !w.cloaked && !w.minimized &&
-         !w.click_through && !w.excluded_from_capture &&
+         !w.zero_alpha && !w.click_through && !w.excluded_from_capture &&
          Overlaps(w.rect, game_client);
 }
 

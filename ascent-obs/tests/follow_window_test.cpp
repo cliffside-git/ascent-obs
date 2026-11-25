@@ -764,6 +764,28 @@ void TestOccluder() {
   CHECK(!IsOccluder(kGamePid, game, hidden));
   CHECK(!IsOccluder(kGamePid, game, Window(13, R(500, 500, 500, 700), "Zero")));
 
+  printf("a layered window read as alpha 0 is ignored; nonzero or unknown "
+         "alpha still occludes\n");
+  WindowFacts zero = Pip();
+  zero.zero_alpha = true;
+  CHECK(!IsOccluder(kGamePid, game, zero));
+  CHECK(FirstOccluder(kGamePid, game, {zero, notepad}) == 1);
+  WindowFacts nonzero = Pip();  // LWA_ALPHA with alpha > 0
+  CHECK(IsOccluder(kGamePid, game, nonzero));
+  WindowFacts unknown = Pip();  // GetLayeredWindowAttributes failed
+  CHECK(IsOccluder(kGamePid, game, unknown));
+
+  printf("zero_alpha only from a read that says LWA_ALPHA with alpha 0\n");
+  using follow_window::kLwaAlpha;
+  using follow_window::ZeroAlpha;
+  CHECK(ZeroAlpha(true, 0, kLwaAlpha));
+  CHECK(ZeroAlpha(true, 0, kLwaAlpha | 0x1));  // plus LWA_COLORKEY
+  CHECK(!ZeroAlpha(true, 1, kLwaAlpha));       // nonzero
+  CHECK(!ZeroAlpha(true, 255, kLwaAlpha));
+  CHECK(!ZeroAlpha(false, 0, kLwaAlpha));      // unknown: the call failed
+  CHECK(!ZeroAlpha(true, 0, 0x1));             // colour key only
+  CHECK(!ZeroAlpha(true, 0, 0));               // no flags
+
   printf("a window beside the game, or touching its edge, is ignored\n");
   const Rect small_game = R(0, 0, 1280, 720);
   CHECK(!IsOccluder(kGamePid, small_game, Window(7, R(1300, 0, 1900, 500), "B")));
