@@ -147,6 +147,13 @@ LaterStart ReconcileLaterStart(const MonitorConfig& running, bool guarded,
 void FillFollowWindowSourceEvent(obs_data_t* out, bool show_game,
                                  const char* reason);
 
+// |json| (one object, as obs_data_get_json writes it) with the member
+// "|key|": |raw| added before its closing brace. |raw| is JSON the caller
+// built (obs_data can't hold an array of arrays, e.g. the follow-window
+// event's "masks"). Unchanged when |raw| is empty or |json| has no object.
+std::string AddRawJsonMember(const std::string& json, const char* key,
+                             const std::string& raw);
+
 // the settings the monitor source gives OBS's monitor_capture. Follow-window
 // mode adds nothing here: it is a filter on top of the same source.
 void FillMonitorCaptureSettings(obs_data_t* out, uint32_t monitor_handle,

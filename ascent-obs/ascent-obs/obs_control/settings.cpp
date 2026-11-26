@@ -249,6 +249,15 @@ void settings::FillFollowWindowSourceEvent(obs_data_t* out, bool show_game,
   obs_data_set_bool(out, "follow", true);
 }
 
+std::string settings::AddRawJsonMember(const std::string& json,
+                                       const char* key,
+                                       const std::string& raw) {
+  // STUB
+  (void)key;
+  (void)raw;
+  return json;
+}
+
 void settings::FillMonitorCaptureSettings(obs_data_t* out,
                                           uint32_t monitor_handle,
                                           int monitor_index, bool cursor,

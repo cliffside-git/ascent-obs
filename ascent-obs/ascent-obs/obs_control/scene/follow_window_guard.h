@@ -69,6 +69,10 @@ struct WindowFacts {
   // LWA_ALPHA with alpha 0. False when the call fails (an
   // UpdateLayeredWindow window): its opacity is unknown, so it may draw.
   bool zero_alpha = false;
+  // |rect| came from DWMWA_EXTENDED_FRAME_BOUNDS. False when only
+  // GetWindowRect answered: good enough to say the window overlaps, not to
+  // mask it (rule 2 masking needs the DWM bounds)
+  bool dwm_bounds = false;
   std::string class_name;
 };
 
@@ -106,6 +110,115 @@ inline int FirstOccluder(uint32_t game_pid, const Rect& game_client,
     }
   }
   return -1;
+}
+
+// ---------------------------------------------------------------------------
+// Rule 2 refinement (SIDECAR.md section 5): mask the covered region instead
+// of blanking the whole frame, where that is provably leak-free. A region is
+// an occluder's DWM extended frame bounds grown by a margin that covers its
+// shadow and any animation drift, cut to the client rect. Anything unknown,
+// more than kMaxMasks occluders, or masks over kMaxMaskedPercent of the
+// game is full BRB, as before.
+
+// margin at 100% (96 DPI); scaled by the monitor's DPI, rounded up
+const int32_t kMaskMarginDip = 32;
+// N: more occluders than this is full BRB
+const size_t kMaxMasks = 4;
+// X: masks (summed, overlaps counted twice) over this share of the client
+// area is full BRB
+const uint32_t kMaxMaskedPercent = 40;
+
+// |r| grown by |m| px on every side (STUB)
+inline Rect Grow(const Rect& r, int32_t m) {
+  (void)m;
+  return r;
+}
+
+// the pixels both rects share; empty when none (STUB)
+inline Rect Intersect(const Rect& a, const Rect& b) {
+  (void)b;
+  return a;
+}
+
+// the mask margin in physical px for a monitor at |dpi|; -1 when the DPI is
+// unknown (0) (STUB)
+inline int32_t MarginPx(uint32_t dpi) {
+  (void)dpi;
+  return -1;
+}
+
+// a window above the game is checked for overlap against this: the client
+// rect grown by the margin, so a window whose shadow or drift reaches the
+// game counts (STUB)
+inline Rect OcclusionArea(const Rect& client, int32_t margin) {
+  (void)margin;
+  return client;
+}
+
+enum class MaskRefusal {
+  kNone = 0,
+  kBoundsUnknown,  // an occluder without DWM bounds, or no margin
+  kTooMany,        // more than kMaxMasks occluders
+  kTooLarge,       // over kMaxMaskedPercent of the client area
+};
+
+inline const char* MaskRefusalName(MaskRefusal r) {
+  switch (r) {
+    case MaskRefusal::kNone: return "none";
+    case MaskRefusal::kBoundsUnknown: return "an occluder's bounds are unknown";
+    case MaskRefusal::kTooMany: return "too many occluders";
+    case MaskRefusal::kTooLarge: return "masked area too large";
+  }
+  return "?";
+}
+
+struct MaskPlan {
+  MaskRefusal refusal = MaskRefusal::kNone;
+  // client-relative px (0,0 = the client's top left), one per occluder
+  std::vector<Rect> masks;
+};
+
+// The masks for one read. |occluded| without |occluders| (or with
+// |bounds_unknown|) means some occluder can't be masked. (STUB: never masks)
+inline MaskPlan PlanMasks(const Rect& client, bool occluded,
+                          const std::vector<Rect>& occluders,
+                          bool bounds_unknown, int32_t margin) {
+  (void)client;
+  (void)occluders;
+  (void)bounds_unknown;
+  (void)margin;
+  MaskPlan p;
+  if (occluded) {
+    p.refusal = MaskRefusal::kBoundsUnknown;
+  }
+  return p;
+}
+
+// A mask normalized 0..1 to the crop, in units of 1e-4, rounded outward (the
+// region it names always contains the masked px).
+struct NormMask {
+  int32_t x = 0;
+  int32_t y = 0;
+  int32_t w = 0;
+  int32_t h = 0;
+  bool operator==(const NormMask& o) const {
+    return x == o.x && y == o.y && w == o.w && h == o.h;
+  }
+};
+
+// (STUB)
+inline std::vector<NormMask> NormalizeMasks(const std::vector<Rect>& masks,
+                                            int32_t crop_w, int32_t crop_h) {
+  (void)masks;
+  (void)crop_w;
+  (void)crop_h;
+  return {};
+}
+
+// "[[x,y,w,h],...]" with 4 decimals, the event's "masks" value (STUB)
+inline std::string MasksJson(const std::vector<NormMask>& masks) {
+  (void)masks;
+  return "[]";
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +274,12 @@ struct Snapshot {
   bool window_alive = false;        // rule 7, after ResolveTarget
   bool foreground_is_game = false;  // rule 1
   bool occluded = false;            // rule 2
+  // rule 2 masking: each occluder's DWM bounds (screen px, z-order nearest
+  // the game first; the walk stops past kMaxMasks), whether some occluder's
+  // bounds are not DWM's, and the mask margin (px; -1 unknown)
+  std::vector<Rect> occluders;
+  bool occluder_bounds_unknown = false;
+  int32_t margin = 0;
   Rect client;                      // the target's client rect, screen px
   Rect monitor;                     // the recorded monitor, screen px
 
@@ -195,6 +314,7 @@ enum class Reason {
   kCaptureMismatch,      // rule 8: the image isn't the monitor
   kSettling,             // rule 5
   kStaleFrame,           // rule 8: no new desktop image since the change
+  kMasked,               // rule 2 masking: the game, occluders painted over
 };
 
 inline const char* ReasonName(Reason r) {
@@ -210,6 +330,7 @@ inline const char* ReasonName(Reason r) {
     case Reason::kSettling: return "settling";
     case Reason::kCaptureMismatch: return "capture does not match the monitor";
     case Reason::kStaleFrame: return "no new desktop frame since the change";
+    case Reason::kMasked: return "masked";
   }
   return "?";
 }
@@ -229,15 +350,18 @@ inline const char* ReasonKey(Reason r) {
     case Reason::kSettling: return "settling";
     case Reason::kCaptureMismatch: return "capture_mismatch";
     case Reason::kStaleFrame: return "stale_frame";
+    case Reason::kMasked: return "masked";
   }
   return "unknown";
 }
 
-// Once per reason change, never per frame: Changed() is true for the first
-// decision and whenever the reason differs from the last one.
+// Once per change, never per frame: Changed() is true for the first decision
+// and whenever the reason or the mask set (normalized, as sent) differs from
+// the last one. (STUB: masks ignored)
 class ReasonNotifier {
 public:
-  bool Changed(Reason r) {
+  bool Changed(Reason r, const std::vector<NormMask>& masks = {}) {
+    (void)masks;
     if (primed_ && r == last_) {
       return false;
     }
@@ -249,6 +373,7 @@ public:
 private:
   bool primed_ = false;
   Reason last_ = Reason::kGame;
+  std::vector<NormMask> last_masks_;
 };
 
 struct GuardInputs {
@@ -268,6 +393,10 @@ struct GuardDecision {
   bool show_game = false;
   Rect crop;  // monitor-relative physical px, valid when show_game
   Reason reason = Reason::kSettling;
+  // show_game with kMasked: paint these (crop-relative px) with the BRB fill
+  std::vector<Rect> masks;
+  // kOccluded: why the occluders were not masked
+  MaskRefusal refusal = MaskRefusal::kNone;
 };
 
 // rule 5: BRB for this long after any input changes

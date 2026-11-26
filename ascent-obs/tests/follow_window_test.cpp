@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "obs_control/settings.h"
 #include "obs_control/scene/follow_window_guard.h"
@@ -923,6 +924,366 @@ void TestSourceEvent() {
   CHECK(keys == "settling game occluded settling game ");
 }
 
+// ---------------------------------------------------------------------------
+// rule 2 masking (SIDECAR.md section 5)
+
+using follow_window::MaskPlan;
+using follow_window::MaskRefusal;
+using follow_window::NormMask;
+using follow_window::PlanMasks;
+
+// client-relative rect
+Rect C(int32_t l, int32_t t, int32_t r, int32_t b) { return R(l, t, r, b); }
+
+void TestMaskGeometry() {
+  using follow_window::Grow;
+  using follow_window::Intersect;
+  using follow_window::MarginPx;
+  using follow_window::OcclusionArea;
+  using follow_window::kMaskMarginDip;
+  printf("mask geometry: grow, intersect, margin by DPI\n");
+  CHECK(Grow(R(100, 100, 200, 150), 10) == R(90, 90, 210, 160));
+  CHECK(Grow(R(100, 100, 200, 150), 0) == R(100, 100, 200, 150));
+  CHECK(Intersect(R(0, 0, 100, 100), R(50, 60, 150, 160)) == R(50, 60, 100, 100));
+  CHECK(Intersect(R(0, 0, 100, 100), R(100, 0, 200, 100)).empty());  // touching
+  CHECK(Intersect(R(0, 0, 100, 100), R(300, 300, 400, 400)).empty());
+  CHECK(MarginPx(96) == kMaskMarginDip);
+  CHECK(MarginPx(144) == (kMaskMarginDip * 3 + 1) / 2);  // 150%, rounded up
+  CHECK(MarginPx(120) == (kMaskMarginDip * 120 + 95) / 96);  // 125%
+  CHECK(MarginPx(192) == kMaskMarginDip * 2);
+  CHECK(MarginPx(0) == -1);
+  printf("a window whose grown bounds reach the client counts as covering\n");
+  const Rect area = OcclusionArea(kGame, 20);
+  CHECK(area == Grow(kGame, 20));
+  WindowFacts beside;
+  beside.pid = 99;
+  beside.visible = true;
+  beside.rect = R(kGame.right + 10, 300, kGame.right + 300, 500);  // 10 px off
+  CHECK(!follow_window::IsOccluder(7, kGame, beside));
+  CHECK(follow_window::IsOccluder(7, area, beside));
+  beside.rect = R(kGame.right + 20, 300, kGame.right + 300, 500);  // touching
+  CHECK(!follow_window::IsOccluder(7, area, beside));
+}
+
+void TestPlanMasks() {
+  using follow_window::kMaxMasks;
+  using follow_window::kMaxMaskedPercent;
+  const Rect client = R(100, 100, 1100, 1100);  // 1000x1000
+  printf("no occluder: nothing to mask\n");
+  MaskPlan p = PlanMasks(client, false, {}, false, 10);
+  CHECK(p.refusal == MaskRefusal::kNone && p.masks.empty());
+
+  printf("one occluder inside: its bounds grown by the margin, "
+         "client-relative\n");
+  p = PlanMasks(client, true, {R(500, 600, 700, 700)}, false, 10);
+  CHECK(p.refusal == MaskRefusal::kNone);
+  CHECK(p.masks.size() == 1 && p.masks[0] == C(390, 490, 610, 610));
+
+  printf("an occluder over the edge: cut to the client\n");
+  p = PlanMasks(client, true, {R(1000, 50, 1300, 300)}, false, 10);
+  CHECK(p.refusal == MaskRefusal::kNone);
+  CHECK(p.masks.size() == 1 && p.masks[0] == C(890, 0, 1000, 210));
+
+  printf("an occluder whose shadow only reaches the client: the margin "
+         "strip\n");
+  p = PlanMasks(client, true, {R(1105, 500, 1400, 600)}, false, 10);
+  CHECK(p.refusal == MaskRefusal::kNone);
+  CHECK(p.masks.size() == 1 && p.masks[0] == C(995, 390, 1000, 510));
+
+  printf("two occluders: one mask each, z-order kept\n");
+  p = PlanMasks(client, true, {R(200, 200, 300, 300), R(800, 800, 900, 900)},
+                false, 0);
+  CHECK(p.refusal == MaskRefusal::kNone && p.masks.size() == 2 &&
+        p.masks[0] == C(100, 100, 200, 200) &&
+        p.masks[1] == C(700, 700, 800, 800));
+
+  printf("unknown: an occluder without DWM bounds, no rects, no margin\n");
+  p = PlanMasks(client, true, {R(500, 600, 700, 700)}, true, 10);
+  CHECK(p.refusal == MaskRefusal::kBoundsUnknown && p.masks.empty());
+  p = PlanMasks(client, true, {}, false, 10);
+  CHECK(p.refusal == MaskRefusal::kBoundsUnknown && p.masks.empty());
+  p = PlanMasks(client, true, {R(500, 600, 700, 700)}, false, -1);
+  CHECK(p.refusal == MaskRefusal::kBoundsUnknown && p.masks.empty());
+
+  printf("N: %zu occluders masked, %zu is full BRB\n", kMaxMasks,
+         kMaxMasks + 1);
+  std::vector<Rect> many;
+  for (size_t i = 0; i < kMaxMasks; i++) {
+    int32_t x = 120 + (int32_t)i * 150;
+    many.push_back(R(x, 120, x + 100, 220));
+  }
+  p = PlanMasks(client, true, many, false, 0);
+  CHECK(p.refusal == MaskRefusal::kNone && p.masks.size() == kMaxMasks);
+  many.push_back(R(120, 900, 220, 1000));
+  p = PlanMasks(client, true, many, false, 0);
+  CHECK(p.refusal == MaskRefusal::kTooMany && p.masks.empty());
+
+  printf("X: masks up to %u%% of the client masked, more is full BRB\n",
+         kMaxMaskedPercent);
+  // 1000 x (10 * X) px = X% of 1000x1000
+  const int32_t rows = (int32_t)kMaxMaskedPercent * 10;
+  p = PlanMasks(client, true, {R(100, 100, 1100, 100 + rows)}, false, 0);
+  CHECK(p.refusal == MaskRefusal::kNone && p.masks.size() == 1);
+  p = PlanMasks(client, true, {R(100, 100, 1100, 100 + rows + 1)}, false, 0);
+  CHECK(p.refusal == MaskRefusal::kTooLarge && p.masks.empty());
+  // the margin counts toward the area
+  p = PlanMasks(client, true, {R(100, 100, 1100, 100 + rows - 5)}, false, 10);
+  CHECK(p.refusal == MaskRefusal::kTooLarge);
+  // two halves that together pass X
+  p = PlanMasks(client, true,
+                {R(100, 100, 1100, 100 + rows / 2 + 1),
+                 R(100, 600, 1100, 600 + rows / 2 + 1)},
+                false, 0);
+  CHECK(p.refusal == MaskRefusal::kTooLarge);
+}
+
+// occluders at |rects| (screen px) in both reads
+void Cover(GuardInputs& in, std::vector<Rect> rects) {
+  in.pre.occluded = in.render.occluded = !rects.empty();
+  in.pre.occluders = in.render.occluders = rects;
+}
+
+void TestMaskedDecision() {
+  printf("masking: an occluder that appears is full BRB for 400 ms, then "
+         "masked\n");
+  GuardInputs in = Good(10000 * kMs);
+  in.pre.margin = in.render.margin = 10;
+  SettleState s = Settled(in);
+  CHECK(Run(in, s).reason == Reason::kGame);
+  const Rect toast = R(1100, 700, 1460, 800);  // over the game's lower right
+  Cover(in, {toast});
+  const uint64_t t0 = in.now_ns + 10 * kMs;
+  in.now_ns = t0;
+  GuardDecision d = Run(in, s);
+  CHECK(!d.show_game && d.reason == Reason::kSettling);
+  d = StepTo(in, s, t0 + 390 * kMs);
+  CHECK(!d.show_game && d.reason == Reason::kSettling);
+  d = StepTo(in, s, t0 + 410 * kMs);
+  CHECK(d.show_game && d.reason == Reason::kMasked);
+  // crop-relative: client (108,111); toast grown by 10, cut to the client
+  CHECK(d.masks.size() == 1 &&
+        d.masks[0] == C(1090 - 108, 690 - 111, 1470 - 108, 810 - 111));
+  CHECK(d.crop == R(108, 111, 1474, 879));
+
+  printf("the occluder moves: full BRB and settle again\n");
+  Cover(in, {R(1100, 650, 1460, 750)});
+  const uint64_t t1 = in.now_ns + 10 * kMs;
+  in.now_ns = t1;
+  CHECK(Run(in, s).reason == Reason::kSettling);
+  CHECK(StepTo(in, s, t1 + 390 * kMs).reason == Reason::kSettling);
+  d = StepTo(in, s, t1 + 410 * kMs);
+  CHECK(d.reason == Reason::kMasked && d.masks.size() == 1 &&
+        d.masks[0] == C(1090 - 108, 640 - 111, 1470 - 108, 760 - 111));
+
+  printf("the occluder resizes: full BRB and settle again\n");
+  Cover(in, {R(1100, 650, 1460, 770)});
+  const uint64_t t2 = in.now_ns + 10 * kMs;
+  in.now_ns = t2;
+  CHECK(Run(in, s).reason == Reason::kSettling);
+  CHECK(StepTo(in, s, t2 + 390 * kMs).reason == Reason::kSettling);
+  CHECK(StepTo(in, s, t2 + 410 * kMs).reason == Reason::kMasked);
+
+  printf("a second occluder joins: full BRB and settle, then two masks\n");
+  Cover(in, {R(1100, 650, 1460, 770), R(200, 200, 400, 300)});
+  const uint64_t t3 = in.now_ns + 10 * kMs;
+  in.now_ns = t3;
+  CHECK(Run(in, s).reason == Reason::kSettling);
+  CHECK(StepTo(in, s, t3 + 390 * kMs).reason == Reason::kSettling);
+  d = StepTo(in, s, t3 + 410 * kMs);
+  CHECK(d.reason == Reason::kMasked && d.masks.size() == 2);
+
+  printf("the occluders leave: full BRB for 400 ms, then the game\n");
+  Cover(in, {});
+  const uint64_t t4 = in.now_ns + 10 * kMs;
+  in.now_ns = t4;
+  CHECK(Run(in, s).reason == Reason::kSettling);
+  CHECK(StepTo(in, s, t4 + 390 * kMs).reason == Reason::kSettling);
+  d = StepTo(in, s, t4 + 410 * kMs);
+  CHECK(d.reason == Reason::kGame && d.show_game && d.masks.empty());
+
+  printf("the render read sees another region than the pre-acquire read: "
+         "BRB, settle\n");
+  {
+    GuardInputs m = Good(10000 * kMs);
+    Cover(m, {toast});
+    SettleState ms = Settled(m);
+    CHECK(Run(m, ms).reason == Reason::kMasked);
+    m.now_ns += 10 * kMs;
+    m.render.occluders = {R(1100, 690, 1460, 790)};  // moved after acquire
+    CHECK(Run(m, ms).reason == Reason::kChangedSinceAcquire);
+    m.pre.occluders = m.render.occluders;  // and stays there
+    const uint64_t t = m.now_ns + 10 * kMs;
+    m.now_ns = t;
+    CHECK(Run(m, ms).reason == Reason::kSettling);
+    CHECK(StepTo(m, ms, t + 390 * kMs).reason == Reason::kSettling);
+    CHECK(StepTo(m, ms, t + 410 * kMs).reason == Reason::kMasked);
+    printf("A->B->A across the two reads settles too\n");
+    m.now_ns += 10 * kMs;
+    m.render.occluders = {toast};
+    CHECK(Run(m, ms).reason == Reason::kChangedSinceAcquire);
+    m.now_ns += 10 * kMs;
+    m.render.occluders = m.pre.occluders;
+    CHECK(Run(m, ms).reason == Reason::kSettling);
+  }
+
+  printf("too many, too large, unknown bounds: full BRB (occluded)\n");
+  {
+    GuardInputs m = Good(10000 * kMs);
+    std::vector<Rect> five;
+    for (int i = 0; i < 5; i++) {
+      five.push_back(R(200 + i * 100, 200, 260 + i * 100, 260));
+    }
+    Cover(m, five);
+    SettleState ms = Settled(m);
+    d = Run(m, ms);
+    CHECK(!d.show_game && d.reason == Reason::kOccluded &&
+          d.refusal == MaskRefusal::kTooMany);
+    Cover(m, {R(108, 111, 1474, 600)});  // most of the client
+    ms = Settled(m);
+    d = Run(m, ms);
+    CHECK(!d.show_game && d.reason == Reason::kOccluded &&
+          d.refusal == MaskRefusal::kTooLarge);
+    Cover(m, {toast});
+    m.pre.occluder_bounds_unknown = m.render.occluder_bounds_unknown = true;
+    ms = Settled(m);
+    d = Run(m, ms);
+    CHECK(!d.show_game && d.reason == Reason::kOccluded &&
+          d.refusal == MaskRefusal::kBoundsUnknown);
+    printf("only one read can't mask: full BRB\n");
+    m.pre.occluder_bounds_unknown = false;
+    ms = Settled(m);
+    d = Run(m, ms);
+    CHECK(!d.show_game && d.reason == Reason::kOccluded);
+    m.render.occluder_bounds_unknown = false;
+    m.pre.margin = -1;
+    ms = Settled(m);
+    d = Run(m, ms);
+    CHECK(!d.show_game && d.reason == Reason::kOccluded);
+  }
+
+  printf("every other rule still wins over masking\n");
+  {
+    GuardInputs m = Good(10000 * kMs);
+    Cover(m, {toast});
+    SettleState ms = Settled(m);
+    CHECK(Run(m, ms).reason == Reason::kMasked);
+    m.now_ns += 10 * kMs;
+    Both(m, [](Snapshot& x) { x.foreground_is_game = false; });
+    CHECK(Run(m, ms).reason == Reason::kNotForeground);
+    GuardInputs u = Good(10000 * kMs);
+    Cover(u, {toast});
+    u.desktop_front = false;
+    ms = Settled(u);
+    CHECK(Run(u, ms).reason == Reason::kDesktopUnfocused);
+    GuardInputs o = Good(10000 * kMs);
+    Cover(o, {toast});
+    Both(o, [](Snapshot& x) { x.client = R(1500, 800, 2100, 1200); });
+    ms = Settled(o);
+    CHECK(Run(o, ms).reason == Reason::kOffMonitor);
+    GuardInputs st = Good(10000 * kMs);
+    Cover(st, {toast});
+    ms = Settled(st);
+    live_frames = false;
+    st.frame.present_ns = 1;  // nothing new since long before
+    Cover(st, {R(1100, 690, 1460, 790)});  // a change the image never showed
+    st.now_ns += 10 * kMs;
+    CHECK(Run(st, ms).reason == Reason::kSettling);
+    st.now_ns += 410 * kMs;
+    CHECK(Run(st, ms).reason == Reason::kStaleFrame);
+    live_frames = true;
+  }
+}
+
+void TestMaskEvent() {
+  using follow_window::MasksJson;
+  using follow_window::NormalizeMasks;
+  using follow_window::ReasonKey;
+  using follow_window::ReasonNotifier;
+  printf("mask event: key, normalized outward to 1e-4, JSON\n");
+  CHECK(std::string(ReasonKey(Reason::kMasked)) == "masked");
+  // crop 1366x768: (100,50)-(250,120) -> x 0.0732..0.1831, y 0.0651..0.1563
+  std::vector<NormMask> n = NormalizeMasks({C(100, 50, 250, 120)}, 1366, 768);
+  CHECK(n.size() == 1);
+  CHECK(n.size() == 1 && n[0].x == 732 && n[0].y == 651);
+  CHECK(n.size() == 1 && n[0].x + n[0].w == 1831 && n[0].y + n[0].h == 1563);
+  // exact edges stay exact
+  n = NormalizeMasks({C(0, 0, 1366, 384)}, 1366, 768);
+  CHECK(n.size() == 1 && n[0] == (NormMask{0, 0, 10000, 5000}));
+  CHECK(MasksJson(n) == "[[0.0000,0.0000,1.0000,0.5000]]");
+  n = NormalizeMasks({C(0, 0, 683, 384), C(683, 384, 1366, 768)}, 1366, 768);
+  CHECK(MasksJson(n) ==
+        "[[0.0000,0.0000,0.5000,0.5000],[0.5000,0.5000,0.5000,0.5000]]");
+  CHECK(MasksJson({}) == "[]");
+
+  printf("event payload: the masks member spliced into the JSON object\n");
+  OBSDataAutoRelease ev = obs_data_create();
+  settings::FillFollowWindowSourceEvent(ev, true, ReasonKey(Reason::kMasked));
+  obs_data_set_int(ev, "event", 7);
+  const std::string base = obs_data_get_json(ev);
+  const std::string with = settings::AddRawJsonMember(
+      base, "masks", "[[0.1000,0.2000,0.3000,0.4000]]");
+  printf("  %s\n", with.c_str());
+  CHECK(with.find("\"masks\": [[0.1000,0.2000,0.3000,0.4000]]") !=
+        std::string::npos);
+  OBSDataAutoRelease back = obs_data_create_from_json(with.c_str());
+  CHECK(back.Get() != nullptr);
+  CHECK(back && std::string(obs_data_get_string(back, "source")) == "monitor");
+  CHECK(back && std::string(obs_data_get_string(back, "reason")) == "masked");
+  CHECK(back && obs_data_get_bool(back, "follow"));
+  CHECK(back && obs_data_get_int(back, "event") == 7);
+  CHECK(settings::AddRawJsonMember(base, "masks", "") == base);
+  CHECK(settings::AddRawJsonMember("{}", "masks", "[]") == "{\"masks\": []}");
+  CHECK(settings::AddRawJsonMember("{\"a\": 1}", "masks", "[]") ==
+        "{\"a\": 1, \"masks\": []}");
+  CHECK(settings::AddRawJsonMember("not json", "masks", "[]") == "not json");
+
+  printf("event once per change of the mask set, never per frame\n");
+  GuardInputs in = Good(10000 * kMs);
+  SettleState s;
+  ReasonNotifier note;
+  int sent = 0;
+  std::string keys;
+  auto frames = [&](int count) {
+    for (int i = 0; i < count; i++) {
+      in.now_ns += 10 * kMs;
+      GuardDecision d = Run(in, s);
+      std::vector<NormMask> nm =
+          d.show_game
+              ? NormalizeMasks(d.masks, d.crop.width(), d.crop.height())
+              : std::vector<NormMask>();
+      if (note.Changed(d.reason, nm)) {
+        sent++;
+        keys += std::string(ReasonKey(d.reason)) + "/" +
+                std::to_string(nm.size()) + " ";
+      }
+    }
+  };
+  frames(30);  // settling, game
+  Cover(in, {R(1100, 700, 1460, 800)});
+  frames(60);  // settling, masked
+  Cover(in, {R(1100, 650, 1460, 750)});
+  frames(60);  // settling, masked (moved)
+  Cover(in, {R(1100, 650, 1460, 750), R(200, 200, 300, 300)});
+  frames(60);  // settling, masked x2
+  Cover(in, {});
+  frames(60);  // settling, game
+  printf("  sent %d: %s\n", sent, keys.c_str());
+  CHECK(sent == 10);
+  CHECK(keys ==
+        "settling/0 game/0 settling/0 masked/1 settling/0 masked/1 "
+        "settling/0 masked/2 settling/0 game/0 ");
+
+  printf("same reason, other masks: sent; same masks again: not sent\n");
+  ReasonNotifier n2;
+  CHECK(n2.Changed(Reason::kMasked, {NormMask{1, 2, 3, 4}}));
+  CHECK(!n2.Changed(Reason::kMasked, {NormMask{1, 2, 3, 4}}));
+  CHECK(n2.Changed(Reason::kMasked, {NormMask{1, 2, 3, 5}}));
+  CHECK(n2.Changed(Reason::kMasked,
+                   {NormMask{1, 2, 3, 5}, NormMask{9, 9, 9, 9}}));
+  CHECK(!n2.Changed(Reason::kMasked,
+                    {NormMask{1, 2, 3, 5}, NormMask{9, 9, 9, 9}}));
+}
+
 void TestFitInside() {
   using follow_window::FitInside;
   printf("crop placement: fit inside the canvas, centered\n");
@@ -955,6 +1316,10 @@ int main(int, char**) {
   TestOccluder();
   TestResolveTarget();
   TestSourceEvent();
+  TestMaskGeometry();
+  TestPlanMasks();
+  TestMaskedDecision();
+  TestMaskEvent();
   TestFitInside();
 
   printf(failures ? "FAILED (%d)\n" : "ALL PASSED\n", failures);
