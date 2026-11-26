@@ -1,5 +1,6 @@
 #include "obs_control/settings.h"
 #include "obs_utils.h"
+#include <communications/protocol.h>
 
 namespace settings {
 
@@ -414,36 +415,73 @@ int settings::GetSupportedAudioTracksCount(const uint32_t& tracks) {
 
 namespace settings {
 
-const char kBorderlessAccessSignal[] = "";
-const char kBorderlessAccessSignalDecl[] = "";
-const char kBorderlessAccessSiteVideoStart[] = "";
+const char kBorderlessAccessSignal[] = "wgc_borderless_access";
+const char kBorderlessAccessSignalDecl[] =
+    "void wgc_borderless_access(int status, int hresult, string site)";
+const char kBorderlessAccessSiteVideoStart[] = "video_start";
 
 BorderlessAccessProbe ReadBorderlessAccessSignal(calldata_t* params) {
-  UNUSED_PARAMETER(params);
-  return BorderlessAccessProbe();  // not implemented
+  BorderlessAccessProbe probe;
+  if (!params) {
+    probe.site = "unknown";
+    return probe;
+  }
+  long long value = 0;
+  if (calldata_get_int(params, "status", &value)) {
+    probe.status = static_cast<int>(value);
+  }
+  if (calldata_get_int(params, "hresult", &value)) {
+    probe.hresult = static_cast<int>(value);
+  }
+  const char* site = nullptr;
+  probe.site = calldata_get_string(params, "site", &site) && site
+                   ? site
+                   : "unknown";
+  return probe;
 }
 
 const char* BorderlessAccessName(int status) {
-  UNUSED_PARAMETER(status);
-  return "";  // not implemented
+  switch (status) {
+    case kBorderlessAccessNotAsked:
+      return "not asked";
+    case kBorderlessAccessNoAnswer:
+      return "no answer";
+    case kBorderlessAccessDeniedBySystem:
+      return "DeniedBySystem";
+    case kBorderlessAccessNotDeclaredByApp:
+      return "NotDeclaredByApp";
+    case kBorderlessAccessDeniedByUser:
+      return "DeniedByUser";
+    case kBorderlessAccessUserPromptRequired:
+      return "UserPromptRequired";
+    case kBorderlessAccessAllowed:
+      return "Allowed";
+    default:
+      return "unknown";
+  }
 }
 
 bool BorderlessAccessEventDue(const BorderlessAccessProbe& probe,
                               int last_sent) {
-  UNUSED_PARAMETER(probe);
-  UNUSED_PARAMETER(last_sent);
-  return false;  // not implemented
+  return probe.site == kBorderlessAccessSiteVideoStart ||
+         probe.status != last_sent;
 }
 
 void FillBorderlessAccessEvent(obs_data_t* out,
                                const BorderlessAccessProbe& probe) {
-  UNUSED_PARAMETER(out);
-  UNUSED_PARAMETER(probe);  // not implemented
+  obs_data_set_int(out, "access", probe.status);
+  obs_data_set_string(out, "site", probe.site.c_str());
+  if (probe.hresult != 0) {
+    obs_data_set_int(out, "hresult", probe.hresult);
+  }
 }
 
 void FillBorderlessAccessMachineInfo(obs_data_t* out, int latest) {
-  UNUSED_PARAMETER(out);
-  UNUSED_PARAMETER(latest);  // not implemented
+  if (latest >= kBorderlessAccessDeniedBySystem &&
+      latest <= kBorderlessAccessAllowed) {
+    obs_data_set_int(out, libascentobs::protocol::kWgcBorderlessAccess,
+                     latest);
+  }
 }
 
 }  // namespace settings

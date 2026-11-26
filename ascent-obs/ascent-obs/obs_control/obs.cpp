@@ -203,6 +203,14 @@ OBS::OBS() :
 OBS::~OBS() {
   blog(LOG_INFO, "releasing obs");
 
+  // first, so no graphics-thread report runs into a half-destroyed OBS;
+  // waits for one in flight (the signal's mutex)
+  if (borderless_access_connected_ && obs_initialized()) {
+    signal_handler_disconnect(obs_get_signal_handler(),
+                              settings::kBorderlessAccessSignal,
+                              &OBS::OnBorderlessAccessSignal, this);
+  }
+
   advanced_output_.reset();
   display_tester_.reset();
 
@@ -286,7 +294,46 @@ bool OBS::Startup(OBSControlCommunications* communications,
   communications_ = communications;
   command_thread_ = command_thread;
 
+  // before the first video start, which asks Windows (libobs-winrt)
+  signal_handler_t* signals = obs_get_signal_handler();
+  signal_handler_add(signals, settings::kBorderlessAccessSignalDecl);
+  signal_handler_connect(signals, settings::kBorderlessAccessSignal,
+                         &OBS::OnBorderlessAccessSignal, this);
+  borderless_access_connected_ = true;
+
   return true;
+}
+
+//------------------------------------------------------------------------------
+// static
+void OBS::OnBorderlessAccessSignal(void* data, calldata_t* params) {
+  OBS* self = static_cast<OBS*>(data);
+  settings::BorderlessAccessProbe probe =
+      settings::ReadBorderlessAccessSignal(params);
+  self->borderless_access_.store(probe.status);
+  if (self->command_thread_) {
+    self->command_thread_->PostTask(
+        std::bind(&OBS::SendBorderlessAccessEvent, self, probe.status,
+                  probe.hresult, std::move(probe.site)));
+  }
+}
+
+//------------------------------------------------------------------------------
+void OBS::SendBorderlessAccessEvent(int status, int hresult, std::string site) {
+  settings::BorderlessAccessProbe probe;
+  probe.status = status;
+  probe.hresult = hresult;
+  probe.site = std::move(site);
+  if (!communications_ ||
+      !settings::BorderlessAccessEventDue(probe, borderless_access_sent_)) {
+    return;
+  }
+  borderless_access_sent_ = status;
+  blog(LOG_INFO, "WGC borderless access: %s (%d) at %s",
+       settings::BorderlessAccessName(status), status, probe.site.c_str());
+  CREATE_OBS_DATA(data);
+  settings::FillBorderlessAccessEvent(data, probe);
+  communications_->Send(protocol::events::WGC_BORDERLESS_ACCESS, data);
 }
 
 //------------------------------------------------------------------------------

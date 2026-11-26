@@ -1,7 +1,9 @@
 #ifndef ASCENTOBS_OBS_CONTROL_OBS_H_
 #define ASCENTOBS_OBS_CONTROL_OBS_H_
 
+#include <atomic>
 #include <memory>
+#include <string>
 #include <obs.hpp>
 #include <base/macros.h>
 #include <base/thread.h>
@@ -365,6 +367,23 @@ private:
   bool brb_from_monitor_primary_ = false;
 
   bool disable_shutdown_on_game_exit_ = false;
+
+public:
+  // Windows' latest borderless-access answer in this process
+  // (settings::BorderlessAccess). Any thread.
+  int borderless_access() const { return borderless_access_.load(); }
+
+private:
+  // global "wgc_borderless_access", raised by libobs-winrt on the graphics
+  // thread (graphics lock held): stores the status and posts
+  // SendBorderlessAccessEvent, nothing else
+  static void OnBorderlessAccessSignal(void* data, calldata_t* params);
+  // command thread: logs and sends event 22 when BorderlessAccessEventDue
+  void SendBorderlessAccessEvent(int status, int hresult, std::string site);
+
+  std::atomic<int> borderless_access_{-2};  // kBorderlessAccessNotAsked
+  int borderless_access_sent_ = -2;         // command thread only
+  bool borderless_access_connected_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(OBS);
 };
