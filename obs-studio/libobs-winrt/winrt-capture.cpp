@@ -314,6 +314,74 @@ try {
 	return false;
 }
 
+/* Windows' AppCapabilityAccessStatus for GraphicsCaptureAccessKind::Borderless
+ * as an int (0..4), or -1 when Windows gave no answer. Never throws: the
+ * callers are C (obs-video.c, win-capture).
+ * |bounded|: give up after 1 s. Used at video start, where this holds the
+ * graphics lock for every capture, game capture included. */
+static int request_borderless_access(bool bounded, int32_t *hresult) noexcept
+try {
+	*hresult = 0;
+	const auto request = winrt::Windows::Graphics::Capture::
+		GraphicsCaptureAccess::RequestAccessAsync(
+			winrt::Windows::Graphics::Capture::
+				GraphicsCaptureAccessKind::Borderless);
+	if (!bounded)
+		return static_cast<int>(request.get());
+	if (request.wait_for(std::chrono::seconds(1)) ==
+	    winrt::Windows::Foundation::AsyncStatus::Started) {
+		/* wait_for left its completion handler (code in this module)
+		 * with Windows, and obs-video.c unloads this module at the end
+		 * of every graphics thread: keep it loaded for good */
+		HMODULE self = nullptr;
+		GetModuleHandleExW(
+			GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+				GET_MODULE_HANDLE_EX_FLAG_PIN,
+			reinterpret_cast<LPCWSTR>(&request_borderless_access),
+			&self);
+		blog(LOG_WARNING, "WGC borderless access: no answer within 1 s");
+		return -1;
+	}
+	/* not get(): wait_for already took the one Completed handler */
+	return static_cast<int>(request.GetResults());
+} catch (const winrt::hresult_error &err) {
+	*hresult = err.code().value;
+	blog(LOG_WARNING, "WGC borderless access request (0x%08X)", *hresult);
+	return -1;
+} catch (...) {
+	*hresult = winrt::to_hresult().value;
+	blog(LOG_WARNING, "WGC borderless access request (0x%08X)", *hresult);
+	return -1;
+}
+
+/* Asks Windows and tells the host process through the global signal
+ * "wgc_borderless_access" (int status, int hresult, string site). A host
+ * that never declared the signal (plain OBS) hears nothing. Keeps no state:
+ * this module is unloaded with every graphics thread. */
+static void report_borderless_access(const char *site, bool bounded) noexcept
+{
+	const auto asked = std::chrono::steady_clock::now();
+	int32_t hresult = 0;
+	const int status = request_borderless_access(bounded, &hresult);
+	if (bounded) {
+		const long long ms =
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - asked)
+				.count();
+		blog(LOG_INFO,
+		     "WGC borderless access request at %s: %d after %lld ms",
+		     site, status, ms);
+	}
+
+	calldata_t params = {0};
+	calldata_set_int(&params, "status", status);
+	calldata_set_int(&params, "hresult", hresult);
+	calldata_set_string(&params, "site", site);
+	signal_handler_signal(obs_get_signal_handler(), "wgc_borderless_access",
+			      &params);
+	calldata_free(&params);
+}
+
 static winrt::Windows::Graphics::Capture::GraphicsCaptureItem
 winrt_capture_create_item(IGraphicsCaptureItemInterop *const interop_factory,
 			  HWND window, HMONITOR monitor)
@@ -402,11 +470,8 @@ static void winrt_capture_device_loss_rebuild(void *device_void, void *data)
 		frame_pool.CreateCaptureSession(item);
 
 	if (winrt_capture_border_toggle_supported()) {
-		winrt::Windows::Graphics::Capture::GraphicsCaptureAccess::
-			RequestAccessAsync(
-				winrt::Windows::Graphics::Capture::
-					GraphicsCaptureAccessKind::Borderless)
-				.get();
+		report_borderless_access(capture->window ? "window" : "monitor",
+					 false);
 		session.IsBorderRequired(false);
 	}
 
@@ -482,11 +547,7 @@ try {
 		frame_pool.CreateCaptureSession(item);
 
 	if (winrt_capture_border_toggle_supported()) {
-		winrt::Windows::Graphics::Capture::GraphicsCaptureAccess::
-			RequestAccessAsync(
-				winrt::Windows::Graphics::Capture::
-					GraphicsCaptureAccessKind::Borderless)
-				.get();
+		report_borderless_access(window ? "window" : "monitor", false);
 		session.IsBorderRequired(false);
 	}
 
@@ -723,6 +784,9 @@ winrt_capture_height(const struct winrt_capture *capture)
 
 extern "C" EXPORT void winrt_capture_thread_start()
 {
+	if (winrt_capture_border_toggle_supported())
+		report_borderless_access("video_start", true);
+
 	struct winrt_capture *capture = capture_list;
 	void *const device = gs_get_device_obj();
 	while (capture) {
