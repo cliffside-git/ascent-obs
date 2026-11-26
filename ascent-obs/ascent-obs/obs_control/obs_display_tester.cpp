@@ -183,13 +183,7 @@ void OBSDisplayTester::OnRender(uint32_t cx, uint32_t cy) {
     return;
   }
 
-  auto monitor_source = static_cast<MonitorSource*>
-    (delegate_->GetSource(OBSDisplayTester::TestSouceTypeMonitor));
-
-  bool has_monitor =
-    monitor_source &&
-     monitor_source->IsVisible() &&
-    !monitor_source->compatible_mode();
+  bool has_monitor = delegate_->IsMonitorTestable();
 
   if (!has_game_source && !has_monitor) {
     return;

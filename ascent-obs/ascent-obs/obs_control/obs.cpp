@@ -203,6 +203,14 @@ OBS::OBS() :
 OBS::~OBS() {
   blog(LOG_INFO, "releasing obs");
 
+  // first, so no graphics-thread report runs into a half-destroyed OBS;
+  // waits for one in flight (the signal's mutex)
+  if (borderless_access_connected_ && obs_initialized()) {
+    signal_handler_disconnect(obs_get_signal_handler(),
+                              settings::kBorderlessAccessSignal,
+                              &OBS::OnBorderlessAccessSignal, this);
+  }
+
   advanced_output_.reset();
   display_tester_.reset();
 
@@ -286,7 +294,46 @@ bool OBS::Startup(OBSControlCommunications* communications,
   communications_ = communications;
   command_thread_ = command_thread;
 
+  // before the first video start, which asks Windows (libobs-winrt)
+  signal_handler_t* signals = obs_get_signal_handler();
+  signal_handler_add(signals, settings::kBorderlessAccessSignalDecl);
+  signal_handler_connect(signals, settings::kBorderlessAccessSignal,
+                         &OBS::OnBorderlessAccessSignal, this);
+  borderless_access_connected_ = true;
+
   return true;
+}
+
+//------------------------------------------------------------------------------
+// static
+void OBS::OnBorderlessAccessSignal(void* data, calldata_t* params) {
+  OBS* self = static_cast<OBS*>(data);
+  settings::BorderlessAccessProbe probe =
+      settings::ReadBorderlessAccessSignal(params);
+  self->borderless_access_.store(probe.status);
+  if (self->command_thread_) {
+    self->command_thread_->PostTask(
+        std::bind(&OBS::SendBorderlessAccessEvent, self, probe.status,
+                  probe.hresult, std::move(probe.site)));
+  }
+}
+
+//------------------------------------------------------------------------------
+void OBS::SendBorderlessAccessEvent(int status, int hresult, std::string site) {
+  settings::BorderlessAccessProbe probe;
+  probe.status = status;
+  probe.hresult = hresult;
+  probe.site = std::move(site);
+  if (!communications_ ||
+      !settings::BorderlessAccessEventDue(probe, borderless_access_sent_)) {
+    return;
+  }
+  borderless_access_sent_ = status;
+  blog(LOG_INFO, "WGC borderless access: %s (%d) at %s",
+       settings::BorderlessAccessName(status), status, probe.site.c_str());
+  CREATE_OBS_DATA(data);
+  settings::FillBorderlessAccessEvent(data, probe);
+  communications_->Send(protocol::events::WGC_BORDERLESS_ACCESS, data);
 }
 
 //------------------------------------------------------------------------------
@@ -1463,19 +1510,149 @@ bool OBS::InitMonitorSource(OBSData& monitor_setting, OBSData& error_result) {
 
   if (monitor_source_.get()) {
     blog(LOG_WARNING, "init monitor source: monitor source already created");
+    if (monitor_source_->OnLaterStart(monitor_setting) ==
+        settings::LaterStart::kRebuildGuarded) {
+      RebuildMonitorSourceGuarded(monitor_setting);
+    }
     return true;
   }
 
-  monitor_source_.reset(new MonitorSource(this));
+  std::unique_ptr<MonitorSource> created(NewMonitorSource());
   bool result =
-    monitor_source_->Create(monitor_setting, scene_->get_scene(), false);
+    created->Create(monitor_setting, scene_->get_scene(), false);
 
-  if (!result) {
-    monitor_source_.reset(nullptr);
+  if (result) {
+    PublishMonitorSource(std::move(created));
   }
 
   UNUSED_PARAMETER(error_result);
   return result;
+}
+
+//------------------------------------------------------------------------------
+void OBS::RebuildMonitorSourceGuarded(OBSData& monitor_setting) {
+  libascentobs::CriticalSectionLock locker(sync_);
+  MonitorSource* replaced = monitor_source_.get();
+  if (!replaced || !scene_.get()) {
+    return;
+  }
+  const bool was_visible = replaced->IsVisible();
+  std::unique_ptr<MonitorSource> guarded(NewMonitorSource());
+  guarded->SetDesktopFront(replaced->desktop_front());
+  // enters the scene with its guard attached, shown as the old one was
+  if (!guarded->Create(monitor_setting, scene_->get_scene(), was_visible)) {
+    // never keep recording the whole monitor after a window was asked for
+    replaced->Block();
+    return;
+  }
+  {
+    libascentobs::CriticalSectionLock lock(visible_source_sync_);
+    if (current_visible_source_ == replaced) {
+      current_visible_source_ = guarded.get();
+    }
+  }
+  replaced->SetVisible(false);
+  PublishMonitorSource(std::move(guarded));
+  blog(LOG_INFO, "follow-window: monitor source rebuilt with the guard");
+}
+
+//------------------------------------------------------------------------------
+void OBS::ReplaceMonitorWithCompatibility(MonitorSource* replaced) {
+  libascentobs::CriticalSectionLock locker(sync_);
+  // the state may have moved on since the display tester asked: stop the
+  // test, as OnBlackTextureDetected does for a hidden monitor, so a later
+  // Register() starts it afresh (Codex review 4)
+  if (!monitor_source_.get() || monitor_source_.get() != replaced ||
+      !monitor_source_->IsVisible() || !scene_.get()) {
+    StopDisplayTest();
+    return;
+  }
+  blog(LOG_WARNING,
+       "black texture detected [switchable devices?] :replace monitor capture");
+  if (monitor_source_.get() == current_visible_source_) {
+    SetVisibleSource(nullptr);
+  }
+
+  monitor_source_->SetVisible(false);
+  std::unique_ptr<MonitorSource> compatible(NewMonitorSource());
+  compatible->SetDesktopFront(monitor_source_->desktop_front());
+  // the whole config: a follow-window source stays one (Codex 6)
+  if (!compatible->CreateCompatibility(
+          monitor_source_->monitor_id(), monitor_source_->monitor_handle(),
+          scene_->get_scene(), monitor_source_->force(),
+          monitor_source_->config())) {
+    // only a guard that could not be attached fails here: keep the old
+    // (guarded) source rather than an unguarded one
+    blog(LOG_ERROR, "compatibility monitor source failed: keeping the old one");
+    monitor_source_->SetVisible(true);
+    return;
+  }
+  PublishMonitorSource(std::move(compatible));
+  monitor_source_->SetVisible(true);
+}
+
+//------------------------------------------------------------------------------
+void OBS::PublishMonitorSource(std::unique_ptr<MonitorSource> next) {
+  std::unique_ptr<MonitorSource> replaced;
+  {
+    std::lock_guard<std::mutex> lock(monitor_publish_mutex_);
+    replaced = std::move(monitor_source_);
+    monitor_source_ = std::move(next);
+  }
+  // destroyed outside the lock (it may release OBS objects); no reader can
+  // reach it any more
+  replaced.reset();
+}
+
+//------------------------------------------------------------------------------
+MonitorSource* OBS::NewMonitorSource() {
+  MonitorSource* source = new MonitorSource(this);
+  source->SetFollowEventSink([this, source](bool show_game,
+                                             const char* reason,
+                                             const std::string& masks) {
+    // graphics thread: every event goes out from the command thread
+    if (command_thread_) {
+      command_thread_->PostTask(std::bind(&OBS::SendFollowWindowSourceEvent,
+                                          this, source, show_game,
+                                          std::string(reason ? reason : ""),
+                                          masks));
+    }
+  });
+  return source;
+}
+
+//------------------------------------------------------------------------------
+void OBS::SendFollowWindowSourceEvent(MonitorSource* sender, bool show_game,
+                                      std::string reason, std::string masks) {
+  libascentobs::CriticalSectionLock locker(sync_);
+  // queued from a render that has since been overtaken: the source was
+  // hidden (the scene's BRB is up and its own event went out) or replaced.
+  // The filter reports again on its first decision once shown (Codex
+  // review 3)
+  if (!communications_ || monitor_source_.get() != sender ||
+      !sender->IsVisible()) {
+    blog(LOG_INFO, "follow-window: display source event %s (%s) dropped: "
+                   "source hidden or replaced",
+         show_game ? "monitor" : "brb", reason.c_str());
+    return;
+  }
+  sender->SetFollowState(show_game, reason, masks);
+  CREATE_OBS_DATA(data);
+  settings::FillFollowWindowSourceEvent(data, show_game, reason.c_str());
+  blog(LOG_INFO, "follow-window: display source event %s (%s)%s%s",
+       show_game ? "monitor" : "brb", reason.c_str(),
+       masks.empty() ? "" : " masks ", masks.c_str());
+  // "masks": [[x,y,w,h],...] only while something is masked (SIDECAR.md
+  // section 5); obs_data can't hold an array of arrays
+  communications_->SendWithRawMember(protocol::events::DISPLAY_SOURCE_CHANGED,
+                                     data, "masks", masks);
+}
+
+//------------------------------------------------------------------------------
+bool OBS::IsMonitorTestable() {
+  std::lock_guard<std::mutex> lock(monitor_publish_mutex_);
+  return monitor_source_.get() && monitor_source_->IsVisible() &&
+         !monitor_source_->compatible_mode();
 }
 
 //------------------------------------------------------------------------------
@@ -1717,6 +1894,9 @@ void OBS::UpdateSourcesVisiblity(bool game_in_foreground,
 
   // record from monitor is case we have monitor source
   if (has_monitor_source() && !monitor_primary_brb) {
+    // a follow-window guard kept from an earlier START: the desktop's focus
+    // BRB is not in effect here, only the guard's own rules (Codex review 2)
+    monitor_source_->SetDesktopFront(true);
     monitor_source_->SetVisible(!game_in_foreground);
     new_visible_source =
       !game_in_foreground ? monitor_source_.get() : new_visible_source;
@@ -1766,6 +1946,8 @@ void OBS::UpdateSourcesVisiblity(bool game_in_foreground,
          "monitor primary: game foreground=%d minimized=%d -> showing %s",
          save_game_in_foreground, is_minimized,
          show_monitor ? "monitor" : "brb");
+    // follow-window mode ORs the same state into its per-frame guard
+    monitor_source_->SetDesktopFront(show_monitor);
     // hide before show, so no frame mixes the desktop into BRB
     if (show_monitor) {
       brb_source_->SetVisible(false);
@@ -1842,7 +2024,21 @@ void OBS::NotifyGameSourceChanged() {
   }
 
   CREATE_OBS_DATA(data);
-  obs_data_set_string(data, "source", current_visible_source_->name());
+  if (current_visible_source_ == monitor_source_.get() &&
+      monitor_source_->follows_window()) {
+    // follow-window: what the filter draws, not just "monitor" (Codex
+    // review 3)
+    settings::FillFollowWindowSourceEvent(
+        data, monitor_source_->follow_show_game(),
+        monitor_source_->follow_reason());
+    communications_->SendWithRawMember(
+        protocol::events::DISPLAY_SOURCE_CHANGED, data, "masks",
+        monitor_source_->follow_show_game() ? monitor_source_->follow_masks()
+                                            : std::string());
+    return;
+  } else {
+    obs_data_set_string(data, "source", current_visible_source_->name());
+  }
   communications_->Send(protocol::events::DISPLAY_SOURCE_CHANGED, data);
 }
 
@@ -1870,26 +2066,21 @@ void OBS::OnBlackTextureDetected(OBSDisplayTester::TestSouceType type) {
     } break;
     case obs_control::OBSDisplayTester::TestSouceTypeMonitor:
     {
-      if (monitor_source_.get() && monitor_source_->IsVisible()) {
-        blog(LOG_WARNING, "black texture detected [switchable devices?] :replace monitor capture");
-        if (monitor_source_.get() == current_visible_source_) {
-          SetVisibleSource(nullptr);
+      MonitorSource* monitor = nullptr;
+      {
+        std::lock_guard<std::mutex> lock(monitor_publish_mutex_);
+        if (monitor_source_.get() && monitor_source_->IsVisible()) {
+          monitor = monitor_source_.get();
         }
-
-        monitor_source_->SetVisible(false);
-        auto monitor_id = monitor_source_->monitor_id();
-        auto monitor_handle = monitor_source_->monitor_handle();
-        auto force = monitor_source_->force();
-
-        monitor_source_.reset(new MonitorSource(this));
-
-        monitor_source_->CreateCompatibility(
-          monitor_id,
-          monitor_handle,
-          scene_->get_scene(),
-          force);
-
-        monitor_source_->SetVisible(true);
+      }
+      if (monitor) {
+        // this runs on the graphics thread (display tester); the monitor
+        // source is replaced on the command thread under sync_ (Codex 1).
+        // The task compares the pointer before using it.
+        if (command_thread_) {
+          command_thread_->PostTask(std::bind(
+              &OBS::ReplaceMonitorWithCompatibility, this, monitor));
+        }
         return;
       }
     } break;

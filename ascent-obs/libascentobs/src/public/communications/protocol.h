@@ -23,6 +23,9 @@ extern const char kVideoEncoders[];
 extern const char kWinrtCaptureSupported[];
 extern const char kNoiseSuppressionSupported[];
 extern const char KIsWindowCapture[];
+// QUERY_MACHINE_INFO: Windows' AppCapabilityAccessStatus (0..4) for
+// borderless WGC capture; absent when Windows gave no answer
+extern const char kWgcBorderlessAccess[];
 
 // known video encoders
 extern const char kVideoEncoderId_x264[];
@@ -138,8 +141,12 @@ enum Events {
   STREAMING_STOPPING,
   STREAMING_STOPPED,
   SWITCHABLE_DEVICE_DETECTED,
-  OBS_WARNING
+  OBS_WARNING,
+  // {"access": int, "site": string[, "hresult": int]}, no identifier
+  WGC_BORDERLESS_ACCESS
 };
+static_assert(WGC_BORDERLESS_ACCESS == 22,
+              "mirrored in ascent-obs-comm codes.rs");
 
 };
 

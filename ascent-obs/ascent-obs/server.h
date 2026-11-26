@@ -36,6 +36,9 @@ private:
 
   virtual void Send(int command_id, OBSData& data);
   virtual void Send(int command_id);
+  virtual void SendWithRawMember(int command_id, OBSData& data,
+                                 const char* key,
+                                 const std::string& raw_json);
   virtual void Shutdown();
 
 private:

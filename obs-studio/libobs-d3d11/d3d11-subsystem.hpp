@@ -796,6 +796,12 @@ struct gs_duplicator : gs_obj {
 	int idx;
 	long refs;
 	bool updated;
+	// ASCENT_EDIT_START: frame provenance for follow-window capture
+	/* counts copies of a new desktop image (LastPresentTime != 0, not a
+	 * pointer-only update) and keeps the QPC time of the last one */
+	uint64_t frame_generation = 0;
+	int64_t last_present_qpc = 0;
+	// ASCENT_EDIT_END: frame provenance for follow-window capture
 
 	void Start();
 

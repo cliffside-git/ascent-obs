@@ -1,7 +1,9 @@
 #ifndef ASCENTOBS_OBS_CONTROL_OBS_H_
 #define ASCENTOBS_OBS_CONTROL_OBS_H_
 
+#include <atomic>
 #include <memory>
+#include <string>
 #include <obs.hpp>
 #include <base/macros.h>
 #include <base/thread.h>
@@ -202,6 +204,7 @@ private:
   virtual void OnBlackTextureDetected(OBSDisplayTester::TestSouceType type);
   virtual void OnColoredTextedDetected(OBSDisplayTester::TestSouceType type);
   virtual Source* GetSource(OBSDisplayTester::TestSouceType source_type);
+  virtual bool IsMonitorTestable();
 
   //libascentobs::TimerQueueTimerDelegate
   virtual void OnTimer(libascentobs::TimerQueueTimer* timer);
@@ -210,6 +213,21 @@ private:
 
 private:
   bool InitMonitorSource(OBSData& monitor_handle, OBSData& error_result);
+  // a later START asks to follow a window on the running unguarded monitor
+  // source: replace it with a guarded one
+  void RebuildMonitorSourceGuarded(OBSData& monitor_setting);
+  // the black-texture fallback, on the command thread under sync_
+  void ReplaceMonitorWithCompatibility(MonitorSource* replaced);
+  // swaps |monitor_source_| under |monitor_publish_mutex_| and destroys the
+  // replaced one after releasing it, so a graphics-thread reader never sees a
+  // freed source
+  void PublishMonitorSource(std::unique_ptr<MonitorSource> next);
+  // a MonitorSource whose follow-window reason changes reach the desktop
+  MonitorSource* NewMonitorSource();
+  // EVT_DISPLAY_SOURCE_CHANGED {source, reason, follow: true}; command thread
+  void SendFollowWindowSourceEvent(MonitorSource* sender, bool show_game,
+                                   std::string reason,
+                                   std::string masks);
   bool InitWindowSource(OBSData& window_setting, OBSData& error_result);
   bool InitBRBSource(OBSData& brb_setting, OBSData& error_result);
   // monitor is the only capture and the desktop asked to show BRB instead of
@@ -334,6 +352,8 @@ private:
   OBSData pending_tobii_;
 
   std::mutex access_mutex_;
+  // guards replacing |monitor_source_| against the display tester's reads
+  std::mutex monitor_publish_mutex_;
 
   // game source wasn't frame wasn't capture...
   bool game_source_capture_failure_ = false;
@@ -347,6 +367,23 @@ private:
   bool brb_from_monitor_primary_ = false;
 
   bool disable_shutdown_on_game_exit_ = false;
+
+public:
+  // Windows' latest borderless-access answer in this process
+  // (settings::BorderlessAccess). Any thread.
+  int borderless_access() const { return borderless_access_.load(); }
+
+private:
+  // global "wgc_borderless_access", raised by libobs-winrt on the graphics
+  // thread (graphics lock held): stores the status and posts
+  // SendBorderlessAccessEvent, nothing else
+  static void OnBorderlessAccessSignal(void* data, calldata_t* params);
+  // command thread: logs and sends event 22 when BorderlessAccessEventDue
+  void SendBorderlessAccessEvent(int status, int hresult, std::string site);
+
+  std::atomic<int> borderless_access_{-2};  // kBorderlessAccessNotAsked
+  int borderless_access_sent_ = -2;         // command thread only
+  bool borderless_access_connected_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(OBS);
 };

@@ -44,6 +44,11 @@ void gs_duplicator::Start()
 	if (!get_monitor(device, idx, output.Assign()))
 		throw "Invalid monitor index";
 
+	// ASCENT_EDIT_START: frame provenance for follow-window capture
+	/* a (re)started duplication has no new desktop image yet */
+	last_present_qpc = 0;
+	// ASCENT_EDIT_END: frame provenance for follow-window capture
+
 	hr = output->QueryInterface(IID_PPV_ARGS(output5.Assign()));
 	hdr = false;
 	sdr_white_nits = 80.f;
@@ -302,8 +307,27 @@ EXPORT bool gs_duplicator_update_frame(gs_duplicator_t *d)
 	copy_texture(d, tex);
 	d->duplicator->ReleaseFrame();
 	d->updated = true;
+	// ASCENT_EDIT_START: frame provenance for follow-window capture
+	/* LastPresentTime is 0 when only the pointer moved: the copied image
+	 * is then the same desktop image as before, not a new one */
+	if (info.LastPresentTime.QuadPart != 0 && d->texture) {
+		d->frame_generation++;
+		d->last_present_qpc = info.LastPresentTime.QuadPart;
+	}
+	// ASCENT_EDIT_END: frame provenance for follow-window capture
 	return true;
 }
+
+// ASCENT_EDIT_START: frame provenance for follow-window capture
+EXPORT bool gs_duplicator_get_frame_info(gs_duplicator_t *duplicator,
+					 uint64_t *generation,
+					 int64_t *last_present_qpc)
+{
+	*generation = duplicator->frame_generation;
+	*last_present_qpc = duplicator->last_present_qpc;
+	return duplicator->texture != nullptr;
+}
+// ASCENT_EDIT_END: frame provenance for follow-window capture
 
 EXPORT gs_texture_t *gs_duplicator_get_texture(gs_duplicator_t *duplicator)
 {

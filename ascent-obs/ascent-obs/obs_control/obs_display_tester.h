@@ -23,6 +23,10 @@ public:
       virtual void OnBlackTextureDetected(TestSouceType type) = 0;
       virtual void OnColoredTextedDetected(TestSouceType type) = 0;
       virtual Source* GetSource(TestSouceType source_type) = 0;
+      // the monitor source is visible and not in compatibility mode; read
+      // under the lock that guards replacing it (the tester runs on the
+      // graphics thread, replacements on the command thread)
+      virtual bool IsMonitorTestable() = 0;
   };
 
 public:

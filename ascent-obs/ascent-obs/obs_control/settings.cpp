@@ -1,5 +1,6 @@
 #include "obs_control/settings.h"
 #include "obs_utils.h"
+#include <communications/protocol.h>
 
 namespace settings {
 
@@ -22,6 +23,7 @@ const char kSettingsSourceGame[] = "game";
 const char kSettingsSourceBRB[] = "brb";
 const char kSettingsMonitorMethod[] = "method";
 const char kSettingsMonitorBrbWhenUnfocused[] = "brb_when_unfocused";
+const char kSettingsMonitorFollowWindow[] = "follow_window";
 const char kSettingsSourceAux[] = "auxSources";
 const char kSettingsSourceTobii[] = "tobii";
 const char kSettingsForeground[] = "foreground";
@@ -172,6 +174,110 @@ bool settings::ParseMonitorBrbWhenUnfocused(obs_data_t* monitor_settings) {
   return obs_data_get_bool(monitor_settings, kSettingsMonitorBrbWhenUnfocused);
 }
 
+uint64_t settings::ParseMonitorFollowWindow(obs_data_t* monitor_settings) {
+  if (!monitor_settings) {
+    return 0;
+  }
+  obs_data_item_t* item =
+      obs_data_item_byname(monitor_settings, kSettingsMonitorFollowWindow);
+  if (!item) {
+    return 0;
+  }
+  bool has_value = obs_data_item_has_user_value(item);
+  bool is_int = obs_data_item_gettype(item) == OBS_DATA_NUMBER &&
+                obs_data_item_numtype(item) == OBS_DATA_NUM_INT;
+  long long hwnd = is_int ? obs_data_item_get_int(item) : 0;
+  obs_data_item_release(&item);
+  if (!has_value) {
+    return 0;
+  }
+  // HWNDs are 32-bit values; anything else is not a window
+  const long long kMaxHwnd = 0xFFFFFFFFll;
+  if (!is_int) {
+    blog(LOG_WARNING, "invalid follow_window (not an integer), ignored");
+    return 0;
+  }
+  if (hwnd < 0 || hwnd > kMaxHwnd) {
+    blog(LOG_WARNING, "invalid follow_window %lld, ignored", hwnd);
+    return 0;
+  }
+  return (uint64_t)hwnd;
+}
+
+bool settings::FollowWindowActive(uint64_t follow_window, int method,
+                                  bool brb_when_unfocused) {
+  const int kMethodDxgi = 1;
+  return follow_window != 0 && method == kMethodDxgi && brb_when_unfocused;
+}
+
+settings::MonitorConfig settings::ParseMonitorConfig(
+    obs_data_t* monitor_settings) {
+  MonitorConfig c;
+  if (!monitor_settings) {
+    return c;
+  }
+  c.cursor = obs_data_get_bool(monitor_settings, "cursor");
+  c.method = ParseMonitorCaptureMethod(monitor_settings);
+  c.brb_when_unfocused = ParseMonitorBrbWhenUnfocused(monitor_settings);
+  c.follow_window = ParseMonitorFollowWindow(monitor_settings);
+  return c;
+}
+
+bool settings::FollowWindowActive(const MonitorConfig& config) {
+  return FollowWindowActive(config.follow_window, config.method,
+                            config.brb_when_unfocused);
+}
+
+settings::LaterStart settings::ReconcileLaterStart(
+    const MonitorConfig& running, bool guarded,
+    const MonitorConfig& requested) {
+  if (!FollowWindowActive(requested)) {
+    // never drops a guard: a running guard keeps its window
+    return LaterStart::kKeep;
+  }
+  if (!guarded) {
+    return LaterStart::kRebuildGuarded;
+  }
+  return requested.follow_window == running.follow_window
+             ? LaterStart::kKeep
+             : LaterStart::kRetarget;
+}
+
+void settings::FillFollowWindowSourceEvent(obs_data_t* out, bool show_game,
+                                           const char* reason) {
+  obs_data_set_string(out, "source", show_game ? "monitor" : "brb");
+  obs_data_set_string(out, "reason", reason ? reason : "unknown");
+  obs_data_set_bool(out, "follow", true);
+}
+
+std::string settings::AddRawJsonMember(const std::string& json,
+                                       const char* key,
+                                       const std::string& raw) {
+  const size_t open = json.find('{');
+  const size_t close = json.rfind('}');
+  if (raw.empty() || !key || open == std::string::npos ||
+      close == std::string::npos || close < open) {
+    return json;
+  }
+  // the last character of the object's last member (|open| when it has none)
+  const size_t last = json.find_last_not_of(" \t\r\n", close - 1);
+  const bool empty_object = last == open;
+  const std::string member =
+      std::string(empty_object ? "" : ", ") + "\"" + key + "\": " + raw;
+  return json.substr(0, last + 1) + member + json.substr(last + 1);
+}
+
+void settings::FillMonitorCaptureSettings(obs_data_t* out,
+                                          uint32_t monitor_handle,
+                                          int monitor_index, bool cursor,
+                                          int method) {
+  obs_data_set_int(out, "monitor_handle", monitor_handle);
+  obs_data_set_int(out, "monitor_index", monitor_index);
+  obs_data_set_bool(out, "capture_cursor", cursor);
+  // METHOD_AUTO = 0, METHOD_DXGI = 1, METHOD_WGC =2
+  obs_data_set_int(out, "method", method);
+}
+
 bool settings::IsMonitorPrimaryWithBrb(bool brb_when_unfocused,
                                        bool has_monitor,
                                        bool has_game,
@@ -306,3 +412,76 @@ int settings::GetSupportedAudioTracksCount(const uint32_t& tracks) {
 
   return count;
 }
+
+namespace settings {
+
+const char kBorderlessAccessSignal[] = "wgc_borderless_access";
+const char kBorderlessAccessSignalDecl[] =
+    "void wgc_borderless_access(int status, int hresult, string site)";
+const char kBorderlessAccessSiteVideoStart[] = "video_start";
+
+BorderlessAccessProbe ReadBorderlessAccessSignal(calldata_t* params) {
+  BorderlessAccessProbe probe;
+  if (!params) {
+    probe.site = "unknown";
+    return probe;
+  }
+  long long value = 0;
+  if (calldata_get_int(params, "status", &value)) {
+    probe.status = static_cast<int>(value);
+  }
+  if (calldata_get_int(params, "hresult", &value)) {
+    probe.hresult = static_cast<int>(value);
+  }
+  const char* site = nullptr;
+  probe.site = calldata_get_string(params, "site", &site) && site
+                   ? site
+                   : "unknown";
+  return probe;
+}
+
+const char* BorderlessAccessName(int status) {
+  switch (status) {
+    case kBorderlessAccessNotAsked:
+      return "not asked";
+    case kBorderlessAccessNoAnswer:
+      return "no answer";
+    case kBorderlessAccessDeniedBySystem:
+      return "DeniedBySystem";
+    case kBorderlessAccessNotDeclaredByApp:
+      return "NotDeclaredByApp";
+    case kBorderlessAccessDeniedByUser:
+      return "DeniedByUser";
+    case kBorderlessAccessUserPromptRequired:
+      return "UserPromptRequired";
+    case kBorderlessAccessAllowed:
+      return "Allowed";
+    default:
+      return "unknown";
+  }
+}
+
+bool BorderlessAccessEventDue(const BorderlessAccessProbe& probe,
+                              int last_sent) {
+  return probe.site == kBorderlessAccessSiteVideoStart ||
+         probe.status != last_sent;
+}
+
+void FillBorderlessAccessEvent(obs_data_t* out,
+                               const BorderlessAccessProbe& probe) {
+  obs_data_set_int(out, "access", probe.status);
+  obs_data_set_string(out, "site", probe.site.c_str());
+  if (probe.hresult != 0) {
+    obs_data_set_int(out, "hresult", probe.hresult);
+  }
+}
+
+void FillBorderlessAccessMachineInfo(obs_data_t* out, int latest) {
+  if (latest >= kBorderlessAccessDeniedBySystem &&
+      latest <= kBorderlessAccessAllowed) {
+    obs_data_set_int(out, libascentobs::protocol::kWgcBorderlessAccess,
+                     latest);
+  }
+}
+
+}  // namespace settings

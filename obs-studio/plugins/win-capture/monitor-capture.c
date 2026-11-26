@@ -1,4 +1,7 @@
 #include <util/dstr.h>
+// ASCENT_EDIT_START: frame provenance for follow-window capture
+#include <util/platform.h>
+// ASCENT_EDIT_END: frame provenance for follow-window capture
 #include "dc-capture.h"
 
 /* clang-format off */
@@ -20,6 +23,11 @@ struct monitor_capture {
 	char monitor_id[128];
 
 	struct dc_capture data;
+	// ASCENT_EDIT_START: frame provenance for follow-window capture
+	/* os_gettime_ns just before the last BitBlt that worked, 0: none */
+	uint64_t captured_ns;
+	uint64_t generation;
+	// ASCENT_EDIT_END: frame provenance for follow-window capture
 };
 
 struct monitor_info {
@@ -166,7 +174,30 @@ static void monitor_capture_update(void *data, obs_data_t *settings)
 {
 	struct monitor_capture *mc = data;
 	update_settings(mc, settings);
+	// ASCENT_EDIT_START: frame provenance for follow-window capture
+	mc->captured_ns = 0;
+	// ASCENT_EDIT_END: frame provenance for follow-window capture
 }
+
+// ASCENT_EDIT_START: frame provenance for follow-window capture
+/* "ascent_frame_info", as duplicator-monitor-capture.c answers it: the GDI
+ * copy is taken every tick, so present_ns is when the last good copy began */
+static void monitor_capture_frame_info(void *data, calldata_t *cd)
+{
+	struct monitor_capture *capture = data;
+	const bool valid = capture->data.valid &&
+			   capture->data.texture_written &&
+			   capture->captured_ns != 0;
+	calldata_set_bool(cd, "valid", valid);
+	calldata_set_int(cd, "present_ns",
+			 valid ? (long long)capture->captured_ns : 0);
+	calldata_set_int(cd, "generation", (long long)capture->generation);
+	calldata_set_int(cd, "x", capture->data.x);
+	calldata_set_int(cd, "y", capture->data.y);
+	calldata_set_int(cd, "width", valid ? capture->data.width : 0);
+	calldata_set_int(cd, "height", valid ? capture->data.height : 0);
+}
+// ASCENT_EDIT_END: frame provenance for follow-window capture
 
 static void *monitor_capture_create(obs_data_t *settings, obs_source_t *source)
 {
@@ -176,6 +207,14 @@ static void *monitor_capture_create(obs_data_t *settings, obs_source_t *source)
 	capture->source = source;
 
 	update_settings(capture, settings);
+
+	// ASCENT_EDIT_START: frame provenance for follow-window capture
+	proc_handler_add(obs_source_get_proc_handler(source),
+			 "void ascent_frame_info(out bool valid, out int present_ns, "
+			 "out int generation, out int x, out int y, out int width, "
+			 "out int height)",
+			 monitor_capture_frame_info, capture);
+	// ASCENT_EDIT_END: frame provenance for follow-window capture
 
 	return capture;
 }
@@ -188,7 +227,14 @@ static void monitor_capture_tick(void *data, float seconds)
 		return;
 
 	obs_enter_graphics();
+	// ASCENT_EDIT_START: frame provenance for follow-window capture
+	const uint64_t start_ns = os_gettime_ns();
 	dc_capture_capture(&capture->data, NULL);
+	if (capture->data.valid && capture->data.last_capture_ok) {
+		capture->captured_ns = start_ns;
+		capture->generation++;
+	}
+	// ASCENT_EDIT_END: frame provenance for follow-window capture
 	obs_leave_graphics();
 
 	UNUSED_PARAMETER(seconds);

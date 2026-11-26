@@ -3,6 +3,7 @@
 #include "obs_control/obs.h"
 #include "obs_control/obs_audio.h"
 #include "obs_control/obs_audio_source_control.h"
+#include "obs_control/settings.h"
 
 using namespace obs_control;
 
@@ -65,6 +66,11 @@ void CommandQueryMachineInfo::Perform(int identifier, OBSData& data) {
        noise_suppression_supported);
   obs_data_set_bool(result, libascentobs::protocol::kNoiseSuppressionSupported,
                     noise_suppression_supported);
+
+  const int borderless_access = __super::obs_->borderless_access();
+  blog(LOG_INFO, "QueryMachine: WGC borderless access: %s (%d)",
+       settings::BorderlessAccessName(borderless_access), borderless_access);
+  settings::FillBorderlessAccessMachineInfo(result, borderless_access);
 
   blog(LOG_INFO, "QueryMachine: sending result");
 

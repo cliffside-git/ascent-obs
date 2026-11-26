@@ -5,6 +5,9 @@
 #include <util/threading.h>
 
 #include "cursor-capture.h"
+// ASCENT_EDIT_START: frame provenance for follow-window capture
+#include <util/util_uint64.h>
+// ASCENT_EDIT_END: frame provenance for follow-window capture
 #ifdef OBS_LEGACY
 #include "../../libobs/util/platform.h"
 #include "../../libobs-winrt/winrt-capture.h"
@@ -508,6 +511,48 @@ static void duplicator_capture_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, "force_sdr", false);
 }
 
+// ASCENT_EDIT_START: frame provenance for follow-window capture
+/* "ascent_frame_info": what image the source holds, for the recorder's
+ * follow-window guard. present_ns is the os_gettime_ns time of the last new
+ * desktop image (pointer-only updates don't count), 0 when none; the area is
+ * the image in screen px (rotation applied). Called on the graphics thread. */
+static uint32_t duplicator_capture_width(void *data);
+static uint32_t duplicator_capture_height(void *data);
+
+static void duplicator_frame_info(void *data, calldata_t *cd)
+{
+	struct duplicator_capture *capture = data;
+	bool valid = false;
+	uint64_t generation = 0;
+	int64_t present_qpc = 0;
+
+	if (capture->method != METHOD_WGC && capture->duplicator &&
+	    capture->width != 0 && capture->height != 0) {
+		valid = gs_duplicator_get_frame_info(
+			capture->duplicator, &generation, &present_qpc);
+	}
+
+	uint64_t present_ns = 0;
+	if (valid && present_qpc > 0) {
+		LARGE_INTEGER freq;
+		QueryPerformanceFrequency(&freq);
+		/* the same conversion as os_gettime_ns */
+		present_ns = util_mul_div64((uint64_t)present_qpc, 1000000000ULL,
+					    (uint64_t)freq.QuadPart);
+	}
+
+	calldata_set_bool(cd, "valid", valid);
+	calldata_set_int(cd, "present_ns", (long long)present_ns);
+	calldata_set_int(cd, "generation", (long long)generation);
+	calldata_set_int(cd, "x", capture->x);
+	calldata_set_int(cd, "y", capture->y);
+	calldata_set_int(cd, "width", valid ? duplicator_capture_width(capture)
+					    : 0);
+	calldata_set_int(cd, "height",
+			 valid ? duplicator_capture_height(capture) : 0);
+}
+// ASCENT_EDIT_END: frame provenance for follow-window capture
+
 static void duplicator_capture_update(void *data, obs_data_t *settings)
 {
 	struct duplicator_capture *mc = data;
@@ -571,6 +616,14 @@ static void *duplicator_capture_create(obs_data_t *settings,
 	update_settings(capture, settings);
 	log_settings(capture, capture->monitor_name, capture->logged_width,
 		     capture->logged_height);
+
+	// ASCENT_EDIT_START: frame provenance for follow-window capture
+	proc_handler_add(obs_source_get_proc_handler(source),
+			 "void ascent_frame_info(out bool valid, out int present_ns, "
+			 "out int generation, out int x, out int y, out int width, "
+			 "out int height)",
+			 duplicator_frame_info, capture);
+	// ASCENT_EDIT_END: frame provenance for follow-window capture
 
 	return capture;
 }

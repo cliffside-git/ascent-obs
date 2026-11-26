@@ -3131,6 +3131,23 @@ bool gs_duplicator_update_frame(gs_duplicator_t *duplicator)
 	return thread_graphics->exports.gs_duplicator_update_frame(duplicator);
 }
 
+// ASCENT_EDIT_START: frame provenance for follow-window capture
+bool gs_duplicator_get_frame_info(gs_duplicator_t *duplicator,
+				  uint64_t *generation,
+				  int64_t *last_present_qpc)
+{
+	*generation = 0;
+	*last_present_qpc = 0;
+	if (!gs_valid_p("gs_duplicator_get_frame_info", duplicator))
+		return false;
+	if (!thread_graphics->exports.gs_duplicator_get_frame_info)
+		return false;
+
+	return thread_graphics->exports.gs_duplicator_get_frame_info(
+		duplicator, generation, last_present_qpc);
+}
+// ASCENT_EDIT_END: frame provenance for follow-window capture
+
 bool gs_can_adapter_fast_clear(void)
 {
 	if (!gs_valid("gs_can_adapter_fast_clear"))

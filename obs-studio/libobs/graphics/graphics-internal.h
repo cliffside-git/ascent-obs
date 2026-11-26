@@ -323,6 +323,11 @@ struct gs_exports {
 	enum gs_color_space (*gs_duplicator_get_color_space)(
 		gs_duplicator_t *duplicator);
 	float (*gs_duplicator_get_sdr_white_level)(gs_duplicator_t *duplicator);
+	// ASCENT_EDIT_START: frame provenance for follow-window capture
+	bool (*gs_duplicator_get_frame_info)(gs_duplicator_t *duplicator,
+					     uint64_t *generation,
+					     int64_t *last_present_qpc);
+	// ASCENT_EDIT_END: frame provenance for follow-window capture
 
 	bool (*device_can_adapter_fast_clear)(gs_device_t *device);
 
