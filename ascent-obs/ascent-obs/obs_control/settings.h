@@ -194,4 +194,52 @@ MonitorPrimaryStart DecideMonitorPrimaryStart(bool requested,
                                               bool output_active);
 };
 
+namespace settings {
+
+// Windows' AppCapabilityAccessStatus for GraphicsCaptureAccessKind::Borderless
+// (0..4), as libobs-winrt reports it, plus two states of our own
+enum BorderlessAccess : int {
+  kBorderlessAccessNotAsked = -2,  // no request ran in this process
+  kBorderlessAccessNoAnswer = -1,  // the request threw or timed out
+  kBorderlessAccessDeniedBySystem = 0,
+  kBorderlessAccessNotDeclaredByApp = 1,
+  kBorderlessAccessDeniedByUser = 2,
+  kBorderlessAccessUserPromptRequired = 3,
+  kBorderlessAccessAllowed = 4,
+};
+
+// the global libobs signal libobs-winrt raises after each request
+extern const char kBorderlessAccessSignal[];
+extern const char kBorderlessAccessSignalDecl[];
+extern const char kBorderlessAccessSiteVideoStart[];
+
+struct BorderlessAccessProbe {
+  int status = kBorderlessAccessNoAnswer;
+  int hresult = 0;
+  std::string site;
+};
+
+// the signal's calldata; a missing param gives NoAnswer / 0 / "unknown"
+BorderlessAccessProbe ReadBorderlessAccessSignal(calldata_t* params);
+
+// "Allowed", "DeniedByUser", ...; "no answer", "not asked"; else "unknown"
+const char* BorderlessAccessName(int status);
+
+// A video start is always sent: one per START (the one at process start is
+// usually lost, the pipe's sender thread starts after OBSControl::Init). A
+// capture start only when the answer differs from the last one sent: monitor
+// WGC re-inits on every alt-tab and every 3 s while failing.
+bool BorderlessAccessEventDue(const BorderlessAccessProbe& probe,
+                              int last_sent);
+
+// event payload {"access": <int>, "site": <string>}, "hresult" only when the
+// request threw. No identifier.
+void FillBorderlessAccessEvent(obs_data_t* out,
+                               const BorderlessAccessProbe& probe);
+
+// QUERY_MACHINE_INFO "wgc_borderless_access": set for 0..4 only
+void FillBorderlessAccessMachineInfo(obs_data_t* out, int latest);
+
+}  // namespace settings
+
 #endif // ASCENTOBS_OBS_CONTROL_SETTINGS_H_

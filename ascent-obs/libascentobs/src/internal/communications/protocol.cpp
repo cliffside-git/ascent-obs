@@ -18,6 +18,7 @@ const char kVideoEncoders[] = "vid_encs";
 const char kWinrtCaptureSupported[] = "winrt_capture_supported";
 const char kNoiseSuppressionSupported[] = "noise_suppression_supported";
 const char KIsWindowCapture[] = "is_window_capture";
+const char kWgcBorderlessAccess[] = "wgc_borderless_access";
 const char kFilenameField[] = "filename";
 const char kMaxFileSizeField[] = "max_file_size_bytes";
 const char kEnableOnDemandSplitField[] = "enbale_on_demand_spilt_video";

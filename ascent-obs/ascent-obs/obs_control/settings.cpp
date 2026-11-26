@@ -411,3 +411,39 @@ int settings::GetSupportedAudioTracksCount(const uint32_t& tracks) {
 
   return count;
 }
+
+namespace settings {
+
+const char kBorderlessAccessSignal[] = "";
+const char kBorderlessAccessSignalDecl[] = "";
+const char kBorderlessAccessSiteVideoStart[] = "";
+
+BorderlessAccessProbe ReadBorderlessAccessSignal(calldata_t* params) {
+  UNUSED_PARAMETER(params);
+  return BorderlessAccessProbe();  // not implemented
+}
+
+const char* BorderlessAccessName(int status) {
+  UNUSED_PARAMETER(status);
+  return "";  // not implemented
+}
+
+bool BorderlessAccessEventDue(const BorderlessAccessProbe& probe,
+                              int last_sent) {
+  UNUSED_PARAMETER(probe);
+  UNUSED_PARAMETER(last_sent);
+  return false;  // not implemented
+}
+
+void FillBorderlessAccessEvent(obs_data_t* out,
+                               const BorderlessAccessProbe& probe) {
+  UNUSED_PARAMETER(out);
+  UNUSED_PARAMETER(probe);  // not implemented
+}
+
+void FillBorderlessAccessMachineInfo(obs_data_t* out, int latest) {
+  UNUSED_PARAMETER(out);
+  UNUSED_PARAMETER(latest);  // not implemented
+}
+
+}  // namespace settings
