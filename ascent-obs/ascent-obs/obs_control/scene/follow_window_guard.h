@@ -9,7 +9,9 @@
 // reach it without OBS or Win32. follow_window_win32.* gathers the facts and
 // follow_window_filter.* draws the decision.
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -69,9 +71,10 @@ struct WindowFacts {
   // LWA_ALPHA with alpha 0. False when the call fails (an
   // UpdateLayeredWindow window): its opacity is unknown, so it may draw.
   bool zero_alpha = false;
-  // |rect| came from DWMWA_EXTENDED_FRAME_BOUNDS. False when only
-  // GetWindowRect answered: good enough to say the window overlaps, not to
-  // mask it (rule 2 masking needs the DWM bounds)
+  // |rect| holds everything the window draws, so it can be its mask: the
+  // DWM extended frame bounds for a normal window, GetWindowRect joined
+  // with them for a shell-band window (a toast). False when a normal window
+  // gave only GetWindowRect: good enough to say it overlaps, not to mask it
   bool dwm_bounds = false;
   std::string class_name;
 };
@@ -112,6 +115,40 @@ inline int FirstOccluder(uint32_t game_pid, const Rect& game_client,
   return -1;
 }
 
+// Rule 2, shell bands (PROTOCOL 17:10): toasts, Start and Action Center are
+// top-level windows that the GetTopWindow/GW_HWNDNEXT list (and EnumWindows)
+// never returns; FindWindowExW(NULL, ...) does. Those of |enumerated| (in its
+// order) that |listed| (the normal z-order list) doesn't hold, except the
+// game itself, count as above the game.
+inline std::vector<uint64_t> ShellBandWindows(
+    const std::vector<uint64_t>& enumerated,
+    const std::vector<uint64_t>& listed, uint64_t game) {
+  std::vector<uint64_t> sorted(listed);
+  std::sort(sorted.begin(), sorted.end());
+  std::vector<uint64_t> out;
+  for (uint64_t w : enumerated) {
+    if (w != game && !std::binary_search(sorted.begin(), sorted.end(), w)) {
+      out.push_back(w);
+    }
+  }
+  return out;
+}
+
+// The same over several walks of the normal list (orchestrator, from Codex's
+// desktop review): a window reordered behind the game while one walk ran can
+// be missing from that walk only. It counts as outside the list only when
+// every walk misses it.
+inline std::vector<uint64_t> ShellBandWindows(
+    const std::vector<uint64_t>& enumerated,
+    const std::vector<std::vector<uint64_t>>& walks, uint64_t game) {
+  std::vector<uint64_t> out = enumerated;
+  out.erase(std::remove(out.begin(), out.end(), game), out.end());
+  for (const std::vector<uint64_t>& walk : walks) {
+    out = ShellBandWindows(out, walk, game);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Rule 2 refinement (SIDECAR.md section 5): mask the covered region instead
 // of blanking the whole frame, where that is provably leak-free. A region is
@@ -128,31 +165,66 @@ const size_t kMaxMasks = 4;
 // area is full BRB
 const uint32_t kMaxMaskedPercent = 40;
 
-// |r| grown by |m| px on every side (STUB)
+// |r| grown by |m| px on every side
 inline Rect Grow(const Rect& r, int32_t m) {
-  (void)m;
-  return r;
+  Rect g;
+  g.left = r.left - m;
+  g.top = r.top - m;
+  g.right = r.right + m;
+  g.bottom = r.bottom + m;
+  return g;
 }
 
-// the pixels both rects share; empty when none (STUB)
+// the pixels both rects share; empty when none
 inline Rect Intersect(const Rect& a, const Rect& b) {
-  (void)b;
-  return a;
+  Rect i;
+  i.left = a.left > b.left ? a.left : b.left;
+  i.top = a.top > b.top ? a.top : b.top;
+  i.right = a.right < b.right ? a.right : b.right;
+  i.bottom = a.bottom < b.bottom ? a.bottom : b.bottom;
+  if (i.empty()) {
+    return Rect();
+  }
+  return i;
 }
 
 // the mask margin in physical px for a monitor at |dpi|; -1 when the DPI is
-// unknown (0) (STUB)
+// unknown (0)
 inline int32_t MarginPx(uint32_t dpi) {
-  (void)dpi;
-  return -1;
+  if (dpi == 0) {
+    return -1;
+  }
+  return (int32_t)(((uint64_t)kMaskMarginDip * dpi + 95) / 96);
 }
 
 // a window above the game is checked for overlap against this: the client
 // rect grown by the margin, so a window whose shadow or drift reaches the
-// game counts (STUB)
+// game counts
 inline Rect OcclusionArea(const Rect& client, int32_t margin) {
-  (void)margin;
-  return client;
+  return Grow(client, margin > 0 ? margin : 0);
+}
+
+// A shell-band window's region reaches the monitor's edge on every side
+// where the gap to it is under |reach| px: a toast sits in a corner and
+// slides in from the nearest edges, and over a borderless game its card
+// was drawn up to 40 px below its window rect while it slid up from the
+// bottom edge (VM r2).
+inline Rect SnapToMonitorEdges(const Rect& r, const Rect& monitor,
+                               int32_t reach) {
+  Rect s = r;
+  if (r.left - monitor.left < reach) {
+    s.left = monitor.left < r.left ? monitor.left : r.left;
+  }
+  if (r.top - monitor.top < reach) {
+    s.top = monitor.top < r.top ? monitor.top : r.top;
+  }
+  if (monitor.right - r.right < reach) {
+    s.right = monitor.right > r.right ? monitor.right : r.right;
+  }
+  if (monitor.bottom - r.bottom < reach) {
+    s.bottom = monitor.bottom > r.bottom ? monitor.bottom : r.bottom;
+  }
+  return s;
 }
 
 enum class MaskRefusal {
@@ -179,17 +251,40 @@ struct MaskPlan {
 };
 
 // The masks for one read. |occluded| without |occluders| (or with
-// |bounds_unknown|) means some occluder can't be masked. (STUB: never masks)
+// |bounds_unknown|) means some occluder can't be masked.
 inline MaskPlan PlanMasks(const Rect& client, bool occluded,
                           const std::vector<Rect>& occluders,
                           bool bounds_unknown, int32_t margin) {
-  (void)client;
-  (void)occluders;
-  (void)bounds_unknown;
-  (void)margin;
   MaskPlan p;
-  if (occluded) {
+  if (!occluded) {
+    return p;
+  }
+  if (bounds_unknown || occluders.empty() || margin < 0) {
     p.refusal = MaskRefusal::kBoundsUnknown;
+    return p;
+  }
+  if (occluders.size() > kMaxMasks) {
+    p.refusal = MaskRefusal::kTooMany;
+    return p;
+  }
+  uint64_t area = 0;
+  for (const Rect& o : occluders) {
+    Rect m = Intersect(Grow(o, margin), client);
+    if (m.empty()) {
+      continue;  // doesn't reach the client: nothing of it is recorded
+    }
+    area += (uint64_t)m.width() * (uint64_t)m.height();
+    m.left -= client.left;
+    m.right -= client.left;
+    m.top -= client.top;
+    m.bottom -= client.top;
+    p.masks.push_back(m);
+  }
+  const uint64_t client_area =
+      client.empty() ? 0 : (uint64_t)client.width() * (uint64_t)client.height();
+  if (area * 100 > client_area * kMaxMaskedPercent) {
+    p.masks.clear();
+    p.refusal = MaskRefusal::kTooLarge;
   }
   return p;
 }
@@ -206,19 +301,42 @@ struct NormMask {
   }
 };
 
-// (STUB)
 inline std::vector<NormMask> NormalizeMasks(const std::vector<Rect>& masks,
                                             int32_t crop_w, int32_t crop_h) {
-  (void)masks;
-  (void)crop_w;
-  (void)crop_h;
-  return {};
+  std::vector<NormMask> out;
+  if (crop_w <= 0 || crop_h <= 0) {
+    return out;
+  }
+  auto down = [](int32_t v, int32_t size) {
+    return (int32_t)(((int64_t)v * 10000) / size);
+  };
+  auto up = [](int32_t v, int32_t size) {
+    return (int32_t)(((int64_t)v * 10000 + size - 1) / size);
+  };
+  for (const Rect& m : masks) {
+    NormMask n;
+    n.x = down(m.left, crop_w);
+    n.y = down(m.top, crop_h);
+    n.w = up(m.right, crop_w) - n.x;
+    n.h = up(m.bottom, crop_h) - n.y;
+    out.push_back(n);
+  }
+  return out;
 }
 
-// "[[x,y,w,h],...]" with 4 decimals, the event's "masks" value (STUB)
+// "[[x,y,w,h],...]" with 4 decimals, the event's "masks" value
 inline std::string MasksJson(const std::vector<NormMask>& masks) {
-  (void)masks;
-  return "[]";
+  std::string out = "[";
+  char buf[96];
+  for (size_t i = 0; i < masks.size(); i++) {
+    const NormMask& m = masks[i];
+    snprintf(buf, sizeof(buf), "%s[%d.%04d,%d.%04d,%d.%04d,%d.%04d]",
+             i ? "," : "", m.x / 10000, m.x % 10000, m.y / 10000,
+             m.y % 10000, m.w / 10000, m.w % 10000, m.h / 10000,
+             m.h % 10000);
+    out += buf;
+  }
+  return out + "]";
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +405,9 @@ struct Snapshot {
     return complete == o.complete && target == o.target &&
            window_alive == o.window_alive &&
            foreground_is_game == o.foreground_is_game &&
-           occluded == o.occluded && client == o.client &&
+           occluded == o.occluded && occluders == o.occluders &&
+           occluder_bounds_unknown == o.occluder_bounds_unknown &&
+           margin == o.margin && client == o.client &&
            monitor == o.monitor;
   }
   bool operator!=(const Snapshot& o) const { return !(*this == o); }
@@ -357,16 +477,16 @@ inline const char* ReasonKey(Reason r) {
 
 // Once per change, never per frame: Changed() is true for the first decision
 // and whenever the reason or the mask set (normalized, as sent) differs from
-// the last one. (STUB: masks ignored)
+// the last one.
 class ReasonNotifier {
 public:
   bool Changed(Reason r, const std::vector<NormMask>& masks = {}) {
-    (void)masks;
-    if (primed_ && r == last_) {
+    if (primed_ && r == last_ && masks == last_masks_) {
       return false;
     }
     primed_ = true;
     last_ = r;
+    last_masks_ = masks;
     return true;
   }
 
@@ -429,7 +549,16 @@ struct SettleState {
   uint64_t last_seen_ns = 0;
 };
 
-// Show BRB when any rule holds, else the monitor cropped to the client rect.
+// rule 2: why one read's occluders can't be masked (kNone: no occluder, or
+// every one can be)
+inline MaskRefusal Refusal(const Snapshot& s) {
+  return PlanMasks(s.client, s.occluded, s.occluders,
+                   s.occluder_bounds_unknown, s.margin)
+      .refusal;
+}
+
+// Show BRB when any rule holds, else the monitor cropped to the client rect,
+// with the occluders' regions painted over (masks).
 // Updates |settle| (call once per rendered frame).
 inline GuardDecision Decide(const GuardInputs& in, SettleState& settle) {
   const Snapshot& pre = in.pre;
@@ -448,12 +577,19 @@ inline GuardDecision Decide(const GuardInputs& in, SettleState& settle) {
       in.now_ns - settle.last_seen_ns > kRenderGapNs;
   if (changed) {
     const Snapshot& was = settle.last;
+    // any change of the occluders (one appears, moves, resizes, leaves)
+    // is animated: a window that appears slides or fades in, one that
+    // leaves fades out, and its DWM bounds don't follow either
+    // The first decision (start, retarget) can't know whether an occluder
+    // it already sees is still animating: the same 400 ms (Codex)
     const bool animated =
-        settle.primed &&
-        ((was.occluded && (!pre.occluded || !now.occluded)) ||
-         (!was.window_alive && (pre.window_alive || now.window_alive)) ||
-         was.target != pre.target || was.target != now.target ||
-         in.reshown);
+        (!settle.primed && (pre.occluded || now.occluded)) ||
+        (settle.primed &&
+         (was.occluded != pre.occluded || was.occluded != now.occluded ||
+          was.occluders != pre.occluders || was.occluders != now.occluders ||
+          (!was.window_alive && (pre.window_alive || now.window_alive)) ||
+          was.target != pre.target || was.target != now.target ||
+          in.reshown));
     const uint64_t until =
         in.now_ns + (animated ? kAnimatedSettleNs : kSettleNs);
     const bool clock_back = in.now_ns < settle.last_seen_ns;
@@ -485,7 +621,8 @@ inline GuardDecision Decide(const GuardInputs& in, SettleState& settle) {
     d.reason = Reason::kDesktopUnfocused;
   } else if (!pre.foreground_is_game || !now.foreground_is_game) {
     d.reason = Reason::kNotForeground;
-  } else if (pre.occluded || now.occluded) {
+  } else if ((d.refusal = Refusal(pre)) != MaskRefusal::kNone ||
+             (d.refusal = Refusal(now)) != MaskRefusal::kNone) {
     d.reason = Reason::kOccluded;
   } else if (!on_monitor) {
     d.reason = Reason::kOffMonitor;
@@ -499,11 +636,23 @@ inline GuardDecision Decide(const GuardInputs& in, SettleState& settle) {
     d.reason = Reason::kStaleFrame;
   } else {
     d.show_game = true;
-    d.reason = Reason::kGame;
     d.crop.left = now.client.left - now.monitor.left;
     d.crop.top = now.client.top - now.monitor.top;
     d.crop.right = now.client.right - now.monitor.left;
     d.crop.bottom = now.client.bottom - now.monitor.top;
+    // pre == now here, so both reads mask the same regions
+    d.masks = PlanMasks(now.client, now.occluded, now.occluders,
+                        now.occluder_bounds_unknown, now.margin)
+                  .masks;
+    d.reason = d.masks.empty() ? Reason::kGame : Reason::kMasked;
+    // a mask is only as good as the image under it: one presented during
+    // the settle (a stalled capture keeps it) may hold an occluder
+    // mid-animation, outside its final bounds (Codex). Still settling:
+    // waiting for the first image presented after it
+    if (!d.masks.empty() && in.frame.present_ns < settle.quiet_until_ns) {
+      d = GuardDecision();
+      d.reason = Reason::kSettling;
+    }
   }
   return d;
 }

@@ -232,8 +232,8 @@ GuardDecision Run(GuardInputs& in, SettleState& s) {
 SettleState Settled(const GuardInputs& in) {
   SettleState s;
   GuardInputs warm = in;
-  for (uint64_t t = 0; t <= 400; t += 16) {
-    warm.now_ns = in.now_ns - 400 * kMs + t * kMs;
+  for (uint64_t t = 0; t <= 800; t += 16) {
+    warm.now_ns = in.now_ns - 800 * kMs + t * kMs;
     Run(warm, s);
   }
   return s;
@@ -965,6 +965,69 @@ void TestMaskGeometry() {
   CHECK(!follow_window::IsOccluder(7, area, beside));
 }
 
+void TestShellBand() {
+  using follow_window::ShellBandWindows;
+  printf("shell bands: top-level windows outside the z-order list count as "
+         "above the game\n");
+  // 0x50 is the toast: FindWindowExW returns it, the list never does
+  const std::vector<uint64_t> listed = {0x10, 0x20, 0x30, 0x40};
+  std::vector<uint64_t> got =
+      ShellBandWindows({0x10, 0x50, 0x20, 0x30, 0x40}, listed, 0x30);
+  CHECK(got.size() == 1 && got[0] == 0x50);
+  printf("several, in enumeration order; the game itself never\n");
+  got = ShellBandWindows({0x60, 0x10, 0x50, 0x99}, listed, 0x99);
+  CHECK(got.size() == 2 && got[0] == 0x60 && got[1] == 0x50);
+  printf("nothing outside the list: none\n");
+  CHECK(ShellBandWindows({0x40, 0x30, 0x20, 0x10}, listed, 0x30).empty());
+  printf("a window created between the two reads is outside the list: it "
+         "counts (fails toward BRB or a mask)\n");
+  got = ShellBandWindows({0x10, 0x20, 0x30, 0x40, 0x70}, listed, 0x30);
+  CHECK(got.size() == 1 && got[0] == 0x70);
+
+  printf("several walks: only a window every walk misses counts "
+         "(orchestrator)\n");
+  // 0x40 was being reordered behind the game during the first walk
+  const std::vector<uint64_t> first = {0x10, 0x20, 0x30};
+  const std::vector<uint64_t> again = {0x10, 0x20, 0x40, 0x30};
+  got = ShellBandWindows({0x10, 0x50, 0x20, 0x30, 0x40},
+                         std::vector<std::vector<uint64_t>>{first, again},
+                         0x30);
+  CHECK(got.size() == 1 && got[0] == 0x50);
+  got = ShellBandWindows({0x10, 0x50, 0x20, 0x30, 0x40},
+                         std::vector<std::vector<uint64_t>>{first, first, again},
+                         0x30);
+  CHECK(got.size() == 1 && got[0] == 0x50);
+  got = ShellBandWindows({0x10, 0x50, 0x20, 0x30, 0x40},
+                         std::vector<std::vector<uint64_t>>{first, first},
+                         0x30);
+  CHECK(got.size() == 2 && got[0] == 0x50 && got[1] == 0x40);
+  CHECK(ShellBandWindows({0x50},
+                         std::vector<std::vector<uint64_t>>{}, 0x30)
+            .size() == 1);
+}
+
+void TestSnapToMonitorEdges() {
+  using follow_window::SnapToMonitorEdges;
+  printf("shell-band regions reach the near monitor edges\n");
+  const Rect mon = R(0, 0, 1920, 1080);
+  // the toast at 100%: right edge on the monitor's, 40 px above its bottom
+  CHECK(SnapToMonitorEdges(R(1524, 647, 1920, 1040), mon, 64) ==
+        R(1524, 647, 1920, 1080));
+  // far from every edge: unchanged
+  CHECK(SnapToMonitorEdges(R(600, 300, 900, 500), mon, 64) ==
+        R(600, 300, 900, 500));
+  // near the left and top
+  CHECK(SnapToMonitorEdges(R(10, 63, 300, 200), mon, 64) ==
+        R(0, 0, 300, 200));
+  // exactly |reach| away: not snapped
+  CHECK(SnapToMonitorEdges(R(64, 64, 300, 200), mon, 64) ==
+        R(64, 64, 300, 200));
+  // a second monitor's coordinates
+  const Rect right = R(1920, 0, 3840, 1080);
+  CHECK(SnapToMonitorEdges(R(3444, 647, 3840, 1040), right, 64) ==
+        R(3444, 647, 3840, 1080));
+}
+
 void TestPlanMasks() {
   using follow_window::kMaxMasks;
   using follow_window::kMaxMaskedPercent;
@@ -1101,6 +1164,43 @@ void TestMaskedDecision() {
   d = StepTo(in, s, t4 + 410 * kMs);
   CHECK(d.reason == Reason::kGame && d.show_game && d.masks.empty());
 
+  printf("the first decision already sees an occluder (start, retarget): "
+         "400 ms, not 100 (Codex)\n");
+  {
+    GuardInputs f = Good(10000 * kMs);
+    Cover(f, {toast});
+    SettleState fs;
+    CHECK(Run(f, fs).reason == Reason::kSettling);
+    const uint64_t start = f.now_ns;
+    CHECK(StepTo(f, fs, start + 110 * kMs).reason == Reason::kSettling);
+    CHECK(StepTo(f, fs, start + 390 * kMs).reason == Reason::kSettling);
+    CHECK(StepTo(f, fs, start + 410 * kMs).reason == Reason::kMasked);
+  }
+
+  printf("masks need an image presented after the settle: one captured "
+         "mid-animation and kept by a stalled capture is full BRB (Codex)\n");
+  {
+    GuardInputs f = Good(10000 * kMs);
+    SettleState fs = Settled(f);
+    Cover(f, {toast});
+    const uint64_t t = f.now_ns + 10 * kMs;
+    f.now_ns = t;
+    CHECK(Run(f, fs).reason == Reason::kSettling);
+    live_frames = false;
+    f.frame.present_ns = t + 50 * kMs;  // the last image: mid-slide
+    f.now_ns = t + 410 * kMs;
+    GuardDecision fd = Decide(f, fs);
+    CHECK(!fd.show_game && fd.reason == Reason::kSettling);
+    f.now_ns = t + 900 * kMs;  // still that image, long after
+    fd = Decide(f, fs);
+    CHECK(!fd.show_game);
+    f.frame.present_ns = t + 405 * kMs;  // presented after the settle ended
+    f.now_ns = t + 910 * kMs;
+    fd = Decide(f, fs);
+    CHECK(fd.show_game && fd.reason == Reason::kMasked);
+    live_frames = true;
+  }
+
   printf("the render read sees another region than the pre-acquire read: "
          "BRB, settle\n");
   {
@@ -1111,11 +1211,12 @@ void TestMaskedDecision() {
     m.now_ns += 10 * kMs;
     m.render.occluders = {R(1100, 690, 1460, 790)};  // moved after acquire
     CHECK(Run(m, ms).reason == Reason::kChangedSinceAcquire);
-    m.pre.occluders = m.render.occluders;  // and stays there
+    m.pre.occluders = m.render.occluders;  // and stays there: the settle
+    // counts from the render read that first saw it, 10 ms earlier
     const uint64_t t = m.now_ns + 10 * kMs;
     m.now_ns = t;
     CHECK(Run(m, ms).reason == Reason::kSettling);
-    CHECK(StepTo(m, ms, t + 390 * kMs).reason == Reason::kSettling);
+    CHECK(StepTo(m, ms, t + 380 * kMs).reason == Reason::kSettling);
     CHECK(StepTo(m, ms, t + 410 * kMs).reason == Reason::kMasked);
     printf("A->B->A across the two reads settles too\n");
     m.now_ns += 10 * kMs;
@@ -1316,6 +1417,8 @@ int main(int, char**) {
   TestOccluder();
   TestResolveTarget();
   TestSourceEvent();
+  TestShellBand();
+  TestSnapToMonitorEdges();
   TestMaskGeometry();
   TestPlanMasks();
   TestMaskedDecision();

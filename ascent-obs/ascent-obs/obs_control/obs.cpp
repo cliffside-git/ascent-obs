@@ -1561,12 +1561,14 @@ void OBS::PublishMonitorSource(std::unique_ptr<MonitorSource> next) {
 MonitorSource* OBS::NewMonitorSource() {
   MonitorSource* source = new MonitorSource(this);
   source->SetFollowEventSink([this, source](bool show_game,
-                                             const char* reason) {
+                                             const char* reason,
+                                             const std::string& masks) {
     // graphics thread: every event goes out from the command thread
     if (command_thread_) {
       command_thread_->PostTask(std::bind(&OBS::SendFollowWindowSourceEvent,
                                           this, source, show_game,
-                                          std::string(reason ? reason : "")));
+                                          std::string(reason ? reason : ""),
+                                          masks));
     }
   });
   return source;
@@ -1574,7 +1576,7 @@ MonitorSource* OBS::NewMonitorSource() {
 
 //------------------------------------------------------------------------------
 void OBS::SendFollowWindowSourceEvent(MonitorSource* sender, bool show_game,
-                                      std::string reason) {
+                                      std::string reason, std::string masks) {
   libascentobs::CriticalSectionLock locker(sync_);
   // queued from a render that has since been overtaken: the source was
   // hidden (the scene's BRB is up and its own event went out) or replaced.
@@ -1587,12 +1589,16 @@ void OBS::SendFollowWindowSourceEvent(MonitorSource* sender, bool show_game,
          show_game ? "monitor" : "brb", reason.c_str());
     return;
   }
-  sender->SetFollowState(show_game, reason);
+  sender->SetFollowState(show_game, reason, masks);
   CREATE_OBS_DATA(data);
   settings::FillFollowWindowSourceEvent(data, show_game, reason.c_str());
-  blog(LOG_INFO, "follow-window: display source event %s (%s)",
-       show_game ? "monitor" : "brb", reason.c_str());
-  communications_->Send(protocol::events::DISPLAY_SOURCE_CHANGED, data);
+  blog(LOG_INFO, "follow-window: display source event %s (%s)%s%s",
+       show_game ? "monitor" : "brb", reason.c_str(),
+       masks.empty() ? "" : " masks ", masks.c_str());
+  // "masks": [[x,y,w,h],...] only while something is masked (SIDECAR.md
+  // section 5); obs_data can't hold an array of arrays
+  communications_->SendWithRawMember(protocol::events::DISPLAY_SOURCE_CHANGED,
+                                     data, "masks", masks);
 }
 
 //------------------------------------------------------------------------------
@@ -1978,6 +1984,11 @@ void OBS::NotifyGameSourceChanged() {
     settings::FillFollowWindowSourceEvent(
         data, monitor_source_->follow_show_game(),
         monitor_source_->follow_reason());
+    communications_->SendWithRawMember(
+        protocol::events::DISPLAY_SOURCE_CHANGED, data, "masks",
+        monitor_source_->follow_show_game() ? monitor_source_->follow_masks()
+                                            : std::string());
+    return;
   } else {
     obs_data_set_string(data, "source", current_visible_source_->name());
   }

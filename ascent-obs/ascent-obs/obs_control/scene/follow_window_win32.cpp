@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <dwmapi.h>
+#include <vector>
 #include <util/platform.h>
 
 #pragma comment(lib, "dwmapi.lib")
@@ -12,6 +13,10 @@ namespace {
 
 // same cap as the desktop's walk (OCCLUSION_WALK_LIMIT)
 const uint32_t kWalkLimit = 4096;
+// cap on the whole top-level list and the FindWindowExW enumeration
+const size_t kListLimit = 16384;
+// more walks of the normal list while a window looks outside it
+const int kListRetries = 2;
 
 #ifndef WDA_EXCLUDEFROMCAPTURE
 #define WDA_EXCLUDEFROMCAPTURE 0x00000011
@@ -84,11 +89,36 @@ Rect ClientRect(HWND hwnd) {
   return r;
 }
 
-bool FrameRect(HWND hwnd, Rect* r) {
+// a shell-band window's mask rect: GetWindowRect, joined with the DWM frame
+// bounds when they read. A toast's DWM bounds change during its slide-in
+// while GetWindowRect covered every toast pixel (w10w-toast probe)
+bool ShellBandRect(HWND hwnd, Rect* r) {
+  RECT wr;
+  if (!GetWindowRect(hwnd, &wr)) {
+    return false;
+  }
+  r->left = wr.left;
+  r->top = wr.top;
+  r->right = wr.right;
+  r->bottom = wr.bottom;
   RECT bounds;
   if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS,
-                                      &bounds, sizeof(bounds))) ||
-      GetWindowRect(hwnd, &bounds)) {
+                                      &bounds, sizeof(bounds))) &&
+      bounds.right > bounds.left && bounds.bottom > bounds.top) {
+    r->left = bounds.left < r->left ? bounds.left : r->left;
+    r->top = bounds.top < r->top ? bounds.top : r->top;
+    r->right = bounds.right > r->right ? bounds.right : r->right;
+    r->bottom = bounds.bottom > r->bottom ? bounds.bottom : r->bottom;
+  }
+  return true;
+}
+
+// |*dwm|: the rect is DWM's extended frame bounds (else GetWindowRect's)
+bool FrameRect(HWND hwnd, Rect* r, bool* dwm) {
+  RECT bounds;
+  *dwm = SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS,
+                                         &bounds, sizeof(bounds)));
+  if (*dwm || GetWindowRect(hwnd, &bounds)) {
     r->left = bounds.left;
     r->top = bounds.top;
     r->right = bounds.right;
@@ -98,21 +128,56 @@ bool FrameRect(HWND hwnd, Rect* r) {
   return false;
 }
 
+// GetDpiForMonitor (shcore, Windows 8.1+), loaded so the recorder still
+// starts where it doesn't exist
+typedef HRESULT(WINAPI* GetDpiForMonitorFn)(HMONITOR, int, UINT*, UINT*);
+
+// the monitor's effective DPI; 0 when it can't be read
+uint32_t MonitorDpi(HMONITOR monitor) {
+  static GetDpiForMonitorFn fn = [] {
+    HMODULE shcore = LoadLibraryW(L"shcore.dll");
+    return shcore ? (GetDpiForMonitorFn)GetProcAddress(shcore,
+                                                        "GetDpiForMonitor")
+                  : nullptr;
+  }();
+  UINT x = 0;
+  UINT y = 0;
+  // MDT_EFFECTIVE_DPI = 0
+  if (!fn || FAILED(fn(monitor, 0, &x, &y))) {
+    return 0;
+  }
+  return x;
+}
+
 enum class ReadResult { kSkip, kFacts, kFailed };
 
 // Facts for one window above the game. Cheap facts first: a window that is
 // invisible or doesn't overlap is not an occluder whatever the rest says, so
 // the rest is read only for windows that could be one. A visible window
-// whose rect can't be read is kFailed (unknown), unless it is gone.
-ReadResult ReadFacts(HWND hwnd, const Rect& game_client, WindowFacts* f) {
+// whose rect can't be read is kFailed (unknown), unless it is gone. |area|
+// is the client rect grown by the mask margin (OcclusionArea). A
+// |shell_band| window (outside the normal z-order list) is masked by
+// ShellBandRect.
+ReadResult ReadFacts(HWND hwnd, const Rect& area, bool shell_band,
+                     const Rect& monitor, int32_t margin, WindowFacts* f) {
   f->visible = IsWindowVisible(hwnd) != FALSE;
   if (!f->visible) {
     return ReadResult::kSkip;
   }
-  if (!FrameRect(hwnd, &f->rect)) {
+  bool rect_ok = false;
+  if (shell_band) {
+    rect_ok = ShellBandRect(hwnd, &f->rect);
+    f->dwm_bounds = rect_ok;
+    if (rect_ok) {
+      f->rect = SnapToMonitorEdges(f->rect, monitor, 2 * margin);
+    }
+  } else {
+    rect_ok = FrameRect(hwnd, &f->rect, &f->dwm_bounds);
+  }
+  if (!rect_ok) {
     return IsWindow(hwnd) ? ReadResult::kFailed : ReadResult::kSkip;
   }
-  if (!Overlaps(f->rect, game_client)) {
+  if (!Overlaps(f->rect, area)) {
     return ReadResult::kSkip;
   }
   f->pid = PidOf(hwnd);
@@ -189,7 +254,8 @@ Probe Win32Facts::Read(bool may_adopt) {
   // rule 3: the monitor
   MONITORINFO mi;
   mi.cbSize = sizeof(mi);
-  if (GetMonitorInfoW((HMONITOR)(uintptr_t)monitor_handle_, &mi)) {
+  HMONITOR monitor = (HMONITOR)(uintptr_t)monitor_handle_;
+  if (GetMonitorInfoW(monitor, &mi)) {
     s.monitor.left = mi.rcMonitor.left;
     s.monitor.top = mi.rcMonitor.top;
     s.monitor.right = mi.rcMonitor.right;
@@ -199,46 +265,180 @@ Probe Win32Facts::Read(bool may_adopt) {
     p.unknown_why = "monitor read failed";
     p.unknown_error = GetLastError();
   }
+  // rule 2 masking: the margin for this monitor's DPI. Unknown DPI is an
+  // unfinished read (BRB), like a failed monitor read
+  s.margin = MarginPx(MonitorDpi(monitor));
+  if (s.margin < 0 && s.complete) {
+    s.complete = false;
+    p.unknown_why = "monitor DPI read failed";
+    p.unknown_error = GetLastError();
+  }
 
   if (s.window_alive) {
     HWND game = (HWND)(uintptr_t)target_;
     s.client = ClientRect(game);
 
-    // rule 2: walk the windows above the game, nearest first. A walk that
-    // doesn't reach the top (limit, a window gone mid-walk, a failed read)
-    // is unknown, never "uncovered"
+    // rule 2: walk the windows above the game, nearest first, and collect
+    // every occluder (its DWM bounds are its mask). A walk that doesn't
+    // reach the top (limit, a window gone mid-walk, a failed read) is
+    // unknown, never "uncovered". Past kMaxMasks occluders the frame is
+    // full BRB whatever lies above, so the walk stops there.
+    const Rect area = OcclusionArea(s.client, s.margin);
     uint64_t walk_start = os_gettime_ns();
+    // one window: false when the read failed (unknown) or the walk can stop
+    // (past kMaxMasks occluders: full BRB whatever else is above)
+    auto consider = [&](HWND hwnd, bool shell_band) {
+      WindowFacts f;
+      ReadResult r =
+          ReadFacts(hwnd, area, shell_band, s.monitor, s.margin, &f);
+      if (r == ReadResult::kFailed) {
+        s.complete = false;
+        p.unknown_why = shell_band ? "a shell-band window could not be read"
+                                   : "a window above could not be read";
+        p.unknown_error = GetLastError();
+        return false;
+      }
+      if (r != ReadResult::kFacts || !IsOccluder(game_pid_, area, f)) {
+        return true;
+      }
+      s.occluded = true;
+      s.occluders.push_back(f.rect);
+      if (!f.dwm_bounds) {
+        s.occluder_bounds_unknown = true;
+      }
+      const std::string cls = ClassOf(hwnd);
+      if (p.occluder_pid == 0) {
+        p.occluder_pid = f.pid;
+        p.occluder_class = cls;
+      }
+      char name[320];
+      snprintf(name, sizeof(name), "pid %u class %s at %d,%d %dx%d%s%s",
+               f.pid, cls.c_str(), f.rect.left, f.rect.top, f.rect.width(),
+               f.rect.height(), shell_band ? " (shell band)" : "",
+               f.dwm_bounds ? "" : " (no DWM bounds)");
+      p.occluders.push_back(name);
+      return s.occluders.size() <= kMaxMasks;
+    };
+
+    // rule 2, the normal band: the windows above the game, nearest first
     SetLastError(ERROR_SUCCESS);
     HWND above = GetWindow(game, GW_HWNDPREV);
+    bool stopped = false;
     while (above) {
       if (++p.walked > kWalkLimit) {
         s.complete = false;
         p.unknown_why = "z-order walk over the limit";
         break;
       }
-      WindowFacts f;
-      ReadResult r = ReadFacts(above, s.client, &f);
-      if (r == ReadResult::kFailed) {
-        s.complete = false;
-        p.unknown_why = "a window above could not be read";
-        p.unknown_error = GetLastError();
-        break;
-      }
-      if (r == ReadResult::kFacts && IsOccluder(game_pid_, s.client, f)) {
-        s.occluded = true;
-        p.occluder_pid = f.pid;
-        p.occluder_class = ClassOf(above);
+      if (!consider(above, false)) {
+        stopped = true;
         break;
       }
       SetLastError(ERROR_SUCCESS);
       above = GetWindow(above, GW_HWNDPREV);
     }
-    if (!above && s.complete && !s.occluded) {
+    if (!above && s.complete) {
       DWORD error = GetLastError();
       if (error != ERROR_SUCCESS) {
         s.complete = false;
         p.unknown_why = "z-order walk broke off";
         p.unknown_error = error;
+      }
+    }
+
+    // rule 2, shell bands (PROTOCOL 17:10): toasts, Start and Action Center
+    // are top-level windows outside the GetTopWindow/GW_HWNDNEXT list (and
+    // EnumWindows), in bands above every normal window. Every top-level
+    // window FindWindowExW returns that the list doesn't hold counts as
+    // above the game.
+    // the normal list, top to bottom; false when it didn't finish (unknown)
+    auto walk_list = [&](std::vector<uint64_t>* listed) {
+      SetLastError(ERROR_SUCCESS);
+      HWND w = GetTopWindow(nullptr);
+      while (w) {
+        if (listed->size() > kListLimit) {
+          s.complete = false;
+          p.unknown_why = "z-order list over the limit";
+          return false;
+        }
+        listed->push_back((uint64_t)(uintptr_t)w);
+        SetLastError(ERROR_SUCCESS);
+        w = GetWindow(w, GW_HWNDNEXT);
+      }
+      DWORD error = GetLastError();
+      if (error != ERROR_SUCCESS) {
+        s.complete = false;
+        p.unknown_why = "z-order list broke off";
+        p.unknown_error = error;
+        return false;
+      }
+      return true;
+    };
+    if (s.complete && !stopped) {
+      std::vector<std::vector<uint64_t>> walks(1);
+      walk_list(&walks[0]);
+      p.listed = (uint32_t)walks[0].size();
+      std::vector<uint64_t> enumerated;
+      HWND prev = nullptr;
+      while (s.complete) {
+        SetLastError(ERROR_SUCCESS);
+        HWND next = FindWindowExW(nullptr, prev, nullptr, nullptr);
+        if (!next) {
+          // the end leaves no error; a |prev| destroyed since the last call
+          // gives ERROR_INVALID_WINDOW_HANDLE and stops short (Codex): the
+          // windows after it were never seen, so unknown
+          DWORD error = GetLastError();
+          if (error != ERROR_SUCCESS) {
+            s.complete = false;
+            p.unknown_why = "top-level enumeration broke off";
+            p.unknown_error = error;
+          }
+          break;
+        }
+        if (enumerated.size() > kListLimit) {
+          s.complete = false;
+          p.unknown_why = "top-level enumeration over the limit";
+          break;
+        }
+        enumerated.push_back((uint64_t)(uintptr_t)next);
+        prev = next;
+      }
+      p.enumerated = (uint32_t)enumerated.size();
+      // a window reordered behind the game during a walk is missing from
+      // that walk only. Before a window outside the list counts, walk the
+      // list again (up to 2 more times) and keep only windows every walk
+      // missed. Only windows that would cover the game (or can't be read)
+      // need it, so most probes walk once.
+      std::vector<uint64_t> covering;
+      if (s.complete) {
+        const std::vector<uint64_t> band =
+            ShellBandWindows(enumerated, walks, (uint64_t)(uintptr_t)game);
+        p.shell_band = (uint32_t)band.size();
+        for (uint64_t b : band) {
+          WindowFacts f;
+          ReadResult r = ReadFacts((HWND)(uintptr_t)b, area, true, s.monitor,
+                                   s.margin, &f);
+          if (r == ReadResult::kFailed ||
+              (r == ReadResult::kFacts && IsOccluder(game_pid_, area, f))) {
+            covering.push_back(b);
+          }
+        }
+      }
+      for (int retry = 0;
+           retry < kListRetries && s.complete && !covering.empty(); retry++) {
+        walks.emplace_back();
+        if (walk_list(&walks.back())) {
+          covering =
+              ShellBandWindows(covering, walks, (uint64_t)(uintptr_t)game);
+        }
+      }
+      p.walks = (uint32_t)walks.size();
+      if (s.complete) {
+        for (uint64_t b : covering) {
+          if (!consider((HWND)(uintptr_t)b, true)) {
+            break;
+          }
+        }
       }
     }
     p.walk_ns = os_gettime_ns() - walk_start;

@@ -1,5 +1,6 @@
 #include "server.h"
 #include "obs_control/obs_utils.h"
+#include "obs_control/settings.h"
 #include "command_line.h"
 #include "obs-config.h"
 
@@ -156,6 +157,17 @@ void Server::Send(int command_id) {
 void Server::Send(int command_id, OBSData& data) {
   obs_data_set_int(data, protocol::kEventField, command_id);
   std::string buffer = obs_data_get_json(data);
+
+  communications_->Send((uint8_t*)buffer.c_str(), buffer.length());
+}
+
+//-----------------------------------------------------------------------------
+// virtual
+void Server::SendWithRawMember(int command_id, OBSData& data, const char* key,
+                               const std::string& raw_json) {
+  obs_data_set_int(data, protocol::kEventField, command_id);
+  std::string buffer = settings::AddRawJsonMember(obs_data_get_json(data),
+                                                  key, raw_json);
 
   communications_->Send((uint8_t*)buffer.c_str(), buffer.length());
 }

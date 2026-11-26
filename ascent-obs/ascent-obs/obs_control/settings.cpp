@@ -252,10 +252,18 @@ void settings::FillFollowWindowSourceEvent(obs_data_t* out, bool show_game,
 std::string settings::AddRawJsonMember(const std::string& json,
                                        const char* key,
                                        const std::string& raw) {
-  // STUB
-  (void)key;
-  (void)raw;
-  return json;
+  const size_t open = json.find('{');
+  const size_t close = json.rfind('}');
+  if (raw.empty() || !key || open == std::string::npos ||
+      close == std::string::npos || close < open) {
+    return json;
+  }
+  // the last character of the object's last member (|open| when it has none)
+  const size_t last = json.find_last_not_of(" \t\r\n", close - 1);
+  const bool empty_object = last == open;
+  const std::string member =
+      std::string(empty_object ? "" : ", ") + "\"" + key + "\": " + raw;
+  return json.substr(0, last + 1) + member + json.substr(last + 1);
 }
 
 void settings::FillMonitorCaptureSettings(obs_data_t* out,

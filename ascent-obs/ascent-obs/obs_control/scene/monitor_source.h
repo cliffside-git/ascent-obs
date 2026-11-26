@@ -50,16 +50,19 @@ public:
   // follow-window reason changes for EVT_DISPLAY_SOURCE_CHANGED (graphics
   // thread); set before Create / CreateCompatibility
   void SetFollowEventSink(
-      std::function<void(bool show_game, const char* reason)> sink) {
+      std::function<void(bool show_game, const char* reason,
+                         const std::string& masks)> sink) {
     follow_event_sink_ = std::move(sink);
   }
 
   // what the follow-window filter last reported to the desktop (command
   // thread); unknown until its first report after the source is shown
-  void SetFollowState(bool show_game, const std::string& reason) {
+  void SetFollowState(bool show_game, const std::string& reason,
+                      const std::string& masks) {
     follow_state_known_ = true;
     follow_show_game_ = show_game;
     follow_reason_ = reason;
+    follow_masks_ = masks;
   }
   // false + "unknown" before the first report: the filter draws BRB then
   bool follow_show_game() const {
@@ -67,6 +70,11 @@ public:
   }
   const char* follow_reason() const {
     return follow_state_known_ ? follow_reason_.c_str() : "unknown";
+  }
+  // the masks JSON of the last report; empty when nothing is masked
+  const std::string& follow_masks() const {
+    static const std::string none;
+    return follow_state_known_ ? follow_masks_ : none;
   }
 
   // never show this source again (a guard was asked for and could not be
@@ -100,10 +108,13 @@ private:
   // the follow-window guard: attached before the source is in the scene,
   // never removed (PROTOCOL rule 8)
   obs_source_t* follow_filter_ = nullptr;
-  std::function<void(bool show_game, const char* reason)> follow_event_sink_;
+  std::function<void(bool show_game, const char* reason,
+                     const std::string& masks)>
+      follow_event_sink_;
   bool follow_state_known_ = false;
   bool follow_show_game_ = false;
   std::string follow_reason_;
+  std::string follow_masks_;
 };
 
 #endif // ASCENTOBS_OBS_CONTROL_MONITOR_SOURCE_H_

@@ -55,6 +55,7 @@ struct Filter {
   bool logged = false;
   Reason last_reason = Reason::kGame;
   uint32_t last_occluder_pid = 0;
+  std::vector<Rect> last_masks;
   gs_texrender_t* texrender = nullptr;  // the whole monitor, cursor drawn
   gs_texture_t* client_texture = nullptr;  // the client rect, copied 1:1
   uint32_t client_cx = 0;
@@ -63,6 +64,8 @@ struct Filter {
   std::vector<uint32_t> probe_us;
   uint64_t walked_sum = 0;
   uint32_t walked_max = 0;
+  uint64_t enumerated_sum = 0;
+  uint32_t shell_band_max = 0;
   uint64_t game_frames = 0;
   uint64_t brb_frames = 0;
 
@@ -97,17 +100,21 @@ void LogCost(Filter* f) {
       *std::max_element(f->probe_us.begin(), f->probe_us.end());
   blog(LOG_INFO,
        "follow-window: cost over %zu probes (2 per frame): z-order walk mean %llu us "
-       "p50 %u us p99 %u us max %u us (windows walked mean %llu max %u); "
+       "p50 %u us p99 %u us max %u us (windows walked mean %llu max %u; "
+       "top-level windows enumerated mean %llu, shell-band max %u); "
        "whole probe p50 %u us p99 %u us max %u us; frames game %llu brb %llu",
        n, (unsigned long long)(sum / n), Percentile(f->walk_us, 0.5),
        Percentile(f->walk_us, 0.99), max_walk,
        (unsigned long long)(f->walked_sum / n), f->walked_max,
+       (unsigned long long)(f->enumerated_sum / n), f->shell_band_max,
        Percentile(f->probe_us, 0.5), Percentile(f->probe_us, 0.99), max_probe,
        (unsigned long long)f->game_frames, (unsigned long long)f->brb_frames);
   f->walk_us.clear();
   f->probe_us.clear();
   f->walked_sum = 0;
   f->walked_max = 0;
+  f->enumerated_sum = 0;
+  f->shell_band_max = 0;
   f->game_frames = 0;
   f->brb_frames = 0;
 }
@@ -117,6 +124,8 @@ void CountCost(Filter* f, const Probe& p) {
   f->probe_us.push_back((uint32_t)(p.total_ns / 1000));
   f->walked_sum += p.walked;
   f->walked_max = std::max(f->walked_max, p.walked);
+  f->enumerated_sum += p.enumerated;
+  f->shell_band_max = std::max(f->shell_band_max, p.shell_band);
   if (f->walk_us.size() >= kCostWindow) {
     LogCost(f);
   }
@@ -173,23 +182,50 @@ void OnTick(void* data, float seconds) {
   CountCost(f, f->pre);
 }
 
+std::string JoinOccluders(const Probe& p) {
+  std::string out;
+  for (const std::string& o : p.occluders) {
+    out += out.empty() ? o : "; " + o;
+  }
+  return out;
+}
+
 void LogDecision(Filter* f, const GuardDecision& d, const Probe& now) {
   // the occluder named is the one either read saw
   const Probe& seen = f->pre.snap.occluded ? f->pre : now;
   bool occluder_changed = d.reason == Reason::kOccluded &&
                           seen.occluder_pid != f->last_occluder_pid;
-  if (f->logged && d.reason == f->last_reason && !occluder_changed) {
+  if (f->logged && d.reason == f->last_reason && !occluder_changed &&
+      d.masks == f->last_masks) {
     return;
   }
   f->logged = true;
   f->last_reason = d.reason;
   f->last_occluder_pid = seen.occluder_pid;
-  if (d.show_game) {
+  f->last_masks = d.masks;
+  if (d.show_game && d.reason == Reason::kMasked) {
+    std::string regions;
+    for (const Rect& m : d.masks) {
+      char buf[64];
+      snprintf(buf, sizeof(buf), "%s%d,%d %dx%d", regions.empty() ? "" : "; ",
+               m.left, m.top, m.width(), m.height());
+      regions += buf;
+    }
+    blog(LOG_INFO,
+         "follow-window: masked (crop %d,%d %dx%d; %zu region(s) in crop px, "
+         "margin %d px: %s; occluders: %s)",
+         d.crop.left, d.crop.top, d.crop.width(), d.crop.height(),
+         d.masks.size(), now.snap.margin, regions.c_str(),
+         JoinOccluders(now).c_str());
+  } else if (d.show_game) {
     blog(LOG_INFO, "follow-window: game (crop %d,%d %dx%d)", d.crop.left,
          d.crop.top, d.crop.width(), d.crop.height());
   } else if (d.reason == Reason::kOccluded) {
-    blog(LOG_INFO, "follow-window: brb (occluded by pid %u class %s)",
-         seen.occluder_pid, seen.occluder_class.c_str());
+    blog(LOG_INFO,
+         "follow-window: brb (occluded by pid %u class %s, not masked: %s; "
+         "occluders: %s)",
+         seen.occluder_pid, seen.occluder_class.c_str(),
+         MaskRefusalName(d.refusal), JoinOccluders(seen).c_str());
   } else if (d.reason == Reason::kUnknown) {
     const Probe& unknown = !f->pre.snap.complete ? f->pre : now;
     blog(LOG_INFO, "follow-window: brb (unknown: %s, error %u)",
@@ -201,12 +237,14 @@ void LogDecision(Filter* f, const GuardDecision& d, const Probe& now) {
 }
 
 // EVT_DISPLAY_SOURCE_CHANGED for the desktop, once per change of what was
-// actually drawn (popup/RESULT.md Q3 design 3)
-void Notify(Filter* f, bool drew_game, Reason reason) {
+// actually drawn (popup/RESULT.md Q3 design 3): game or BRB and why, and
+// the masked regions normalized to the crop (SIDECAR.md section 5)
+void Notify(Filter* f, bool drew_game, Reason reason,
+            const std::vector<NormMask>& masks = {}) {
   if (f->report_again.exchange(false)) {
     f->notifier = ReasonNotifier();
   }
-  if (!f->notifier.Changed(reason)) {
+  if (!f->notifier.Changed(reason, masks)) {
     return;
   }
   EventSink sink;
@@ -215,7 +253,8 @@ void Notify(Filter* f, bool drew_game, Reason reason) {
     sink = f->sink;
   }
   if (sink) {
-    sink(drew_game, ReasonKey(reason));
+    sink(drew_game, ReasonKey(reason),
+         masks.empty() ? std::string() : MasksJson(masks));
   }
 }
 
@@ -352,6 +391,50 @@ gs_texture_t* CopyClient(Filter* f, gs_texture_t* monitor, const Rect& crop) {
   return f->client_texture;
 }
 
+// rule 2 masking: the BRB fill over each mask (client px) in the copied
+// client texture, before it is scaled, so the scaling draw never samples an
+// occluder's texel
+bool PaintMasks(gs_texture_t* client, const std::vector<Rect>& masks) {
+  const uint32_t cw = gs_texture_get_width(client);
+  const uint32_t ch = gs_texture_get_height(client);
+  gs_texture_t* previous_target = gs_get_render_target();
+  gs_zstencil_t* previous_zs = gs_get_zstencil_target();
+  const enum gs_color_space previous_space = gs_get_color_space();
+  gs_viewport_push();
+  gs_projection_push();
+  gs_matrix_push();
+  gs_matrix_identity();
+  gs_set_render_target_with_color_space(client, nullptr, GS_CS_SRGB);
+  gs_set_viewport(0, 0, (int)cw, (int)ch);
+  gs_ortho(0.0f, (float)cw, 0.0f, (float)ch, -100.0f, 100.0f);
+  gs_blend_state_push();
+  gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+  gs_effect_t* solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+  gs_eparam_t* color = gs_effect_get_param_by_name(solid, "color");
+  struct vec4 c;
+  vec4_from_rgba_srgb(&c, kBrbFill);
+  const bool previous_srgb = gs_framebuffer_srgb_enabled();
+  gs_enable_framebuffer_srgb(true);
+  gs_effect_set_vec4(color, &c);
+  bool painted = gs_get_render_target() == client;
+  while (painted && gs_effect_loop(solid, "Solid")) {
+    for (const Rect& m : masks) {
+      gs_matrix_push();
+      gs_matrix_translate3f((float)m.left, (float)m.top, 0.0f);
+      gs_draw_sprite(nullptr, 0, (uint32_t)m.width(), (uint32_t)m.height());
+      gs_matrix_pop();
+    }
+  }
+  gs_enable_framebuffer_srgb(previous_srgb);
+  gs_blend_state_pop();
+  gs_set_render_target_with_color_space(previous_target, previous_zs,
+                                        previous_space);
+  gs_matrix_pop();
+  gs_projection_pop();
+  gs_viewport_pop();
+  return painted;
+}
+
 void Render(void* data, gs_effect_t* effect) {
   UNUSED_PARAMETER(effect);
   Filter* f = static_cast<Filter*>(data);
@@ -397,6 +480,10 @@ void Render(void* data, gs_effect_t* effect) {
                          (uint32_t)d.crop.bottom <= mh;
   gs_texture_t* monitor = crop_fits ? RenderMonitor(f, mw, mh) : nullptr;
   gs_texture_t* client = monitor ? CopyClient(f, monitor, d.crop) : nullptr;
+  // a masked frame whose masks could not be painted is not drawn
+  if (client && !d.masks.empty() && !PaintMasks(client, d.masks)) {
+    client = nullptr;
+  }
   if (!client) {
     f->brb_frames++;
     DrawFill(cx, cy);
@@ -406,7 +493,8 @@ void Render(void* data, gs_effect_t* effect) {
   }
 
   f->game_frames++;
-  Notify(f, true, Reason::kGame);
+  Notify(f, true, d.reason,
+         NormalizeMasks(d.masks, d.crop.width(), d.crop.height()));
   Placement p = FitInside(d.crop.width(), d.crop.height(), cx, cy);
   gs_effect_t* def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
   gs_eparam_t* image = gs_effect_get_param_by_name(def, "image");

@@ -16,6 +16,7 @@
 #include <obs.h>
 #include <cstdint>
 #include <functional>
+#include <string>
 
 namespace follow_window {
 
@@ -30,9 +31,13 @@ obs_source_t* CreateFilter(uint64_t hwnd, uint32_t monitor_handle,
 void Retarget(obs_source_t* filter, uint64_t hwnd);
 
 // called on the graphics thread once per change of what the filter draws
-// (game or BRB, and why): |reason| is a ReasonKey, a static string. Set it
-// before the filter is attached; the receiver posts to the command thread.
-typedef std::function<void(bool show_game, const char* reason)> EventSink;
+// (game or BRB, and why, and the masked regions): |reason| is a ReasonKey, a
+// static string; |masks| is the event's "masks" JSON (MasksJson), empty when
+// nothing is masked. Set it before the filter is attached; the receiver
+// posts to the command thread.
+typedef std::function<void(bool show_game, const char* reason,
+                           const std::string& masks)>
+    EventSink;
 void SetEventSink(obs_source_t* filter, EventSink sink);
 
 // the source was hidden or shown: the next decision is reported to the

@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "obs_control/scene/follow_window_guard.h"
 
@@ -19,9 +20,15 @@ struct Probe {
   bool adopted = false;  // switched to another window of the game's pid
   uint32_t occluder_pid = 0;
   std::string occluder_class;
+  // every occluder seen, for the log: "pid N class C at x,y wxh"
+  std::vector<std::string> occluders;
   const char* unknown_why = nullptr;  // set when !snap.complete
   uint32_t unknown_error = 0;         // GetLastError() for unknown_why
   uint32_t walked = 0;    // windows looked at above the game
+  uint32_t listed = 0;      // windows in the normal z-order list
+  uint32_t enumerated = 0;  // top-level windows from FindWindowExW
+  uint32_t shell_band = 0;  // of those, outside the list (shell bands)
+  uint32_t walks = 0;       // walks of the normal list (1 + retries)
   uint64_t walk_ns = 0;   // cost of the occlusion walk
   uint64_t total_ns = 0;  // cost of the whole probe
 };

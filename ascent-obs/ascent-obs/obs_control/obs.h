@@ -224,7 +224,8 @@ private:
   MonitorSource* NewMonitorSource();
   // EVT_DISPLAY_SOURCE_CHANGED {source, reason, follow: true}; command thread
   void SendFollowWindowSourceEvent(MonitorSource* sender, bool show_game,
-                                   std::string reason);
+                                   std::string reason,
+                                   std::string masks);
   bool InitWindowSource(OBSData& window_setting, OBSData& error_result);
   bool InitBRBSource(OBSData& brb_setting, OBSData& error_result);
   // monitor is the only capture and the desktop asked to show BRB instead of
