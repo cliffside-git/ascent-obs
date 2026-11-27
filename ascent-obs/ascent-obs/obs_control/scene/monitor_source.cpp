@@ -20,18 +20,19 @@ HMONITOR GetMainDisplay() {
   return MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
 }
 
-std::map<uint32_t, int> monitors;
-static BOOL CALLBACK enum_monitor_props(HMONITOR handle, 
-                                        HDC hdc, 
+// keyed by the sign-extended handle (settings::NormalizeHandle)
+std::map<int64_t, int> monitors;
+static BOOL CALLBACK enum_monitor_props(HMONITOR handle,
+                                        HDC hdc,
                                         LPRECT rect,
                                         LPARAM param) {
   UNUSED_PARAMETER(hdc);
   UNUSED_PARAMETER(rect);
   UNUSED_PARAMETER(param);
-  uint32_t handle_uint32_t = (uint32_t)handle;
-  monitors[handle_uint32_t] = (int)monitors.size();
-  blog(LOG_INFO, "detect monitor [%d]: handle 0x%x", monitors.size() - 1,
-       handle_uint32_t);
+  int64_t key = settings::NormalizeHandle((long long)(intptr_t)handle);
+  monitors[key] = (int)monitors.size();
+  blog(LOG_INFO, "detect monitor [%d]: handle 0x%llx (%lld)",
+       (int)monitors.size() - 1, (unsigned long long)key, (long long)key);
   return TRUE;
 }
 
@@ -69,24 +70,29 @@ bool MonitorSource::Create(OBSData& data, obs_scene_t* scene,
        config_.method, config_.brb_when_unfocused);
 
   monitor_index_ = 0;
-  monitor_handle_ = (uint32_t)obs_data_get_int(data, kSettingMonitorHandle);
+  monitor_handle_ = settings::ParseHandle(data, kSettingMonitorHandle);
 
-  if (monitors.empty()) {
+  // a monitor handle can be new since the last list (a monitor reconnected
+  // or the PC woke): list the monitors again before giving up on it
+  if (monitors.empty() ||
+      (monitor_handle_ && monitors.find(monitor_handle_) == monitors.end())) {
+    monitors.clear();
     EnumDisplayMonitors(NULL, NULL, enum_monitor_props, NULL);
   }
- 
-  auto monitor_iter = monitor_handle_ ? 
+
+  auto monitor_iter = monitor_handle_ ?
     monitors.find(monitor_handle_) : monitors.end();
 
   if (monitor_iter != monitors.end()) {
     monitor_index_ = monitor_iter->second;
   } else {
-    if (monitor_handle_ == NULL) {
-      monitor_handle_ = (uint32_t)GetMainDisplay();
-    }
     blog(LOG_WARNING,
-         "invalid monitor handle 0x%x (int: 0x%x), using main screen.",
-         (HMONITOR)monitor_handle_, monitor_handle_);
+         "invalid monitor handle 0x%llx (%lld), using main screen.",
+         (unsigned long long)monitor_handle_, (long long)monitor_handle_);
+    if (monitor_handle_ == 0) {
+      monitor_handle_ =
+          settings::NormalizeHandle((long long)(intptr_t)GetMainDisplay());
+    }
   }
 
   blog(LOG_INFO, "capture monitor index %d.", monitor_index_);
@@ -157,7 +163,7 @@ void MonitorSource::Block() {
 }
 
 bool MonitorSource::CreateCompatibility(int monitor_id,
-                                        uint32_t monitor_handle,
+                                        int64_t monitor_handle,
                                         obs_scene_t* scene,
                                         bool force,
                                         const settings::MonitorConfig& config) {
@@ -227,8 +233,9 @@ bool MonitorSource::CreateMonitorsSource(obs_scene_t* scene,
   SetTransform(source_item_, OBS_BOUNDS_SCALE_INNER);
 
   blog(LOG_INFO, 
-       "monitor source [index: %d handle:0x%x (%d) cursor:%d] added", 
-       monitor_index_, monitor_handle_, monitor_handle_, config_.cursor);
+       "monitor source [index: %d handle:0x%llx (%lld) cursor:%d] added",
+       monitor_index_, (unsigned long long)monitor_handle_,
+       (long long)monitor_handle_, config_.cursor);
 
   return true;
 }

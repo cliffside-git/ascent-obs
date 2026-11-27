@@ -14,6 +14,7 @@
 
 #include "obs_control/scene/follow_window_guard.h"
 #include "obs_control/scene/follow_window_win32.h"
+#include "obs_control/settings.h"
 
 namespace follow_window {
 
@@ -32,7 +33,7 @@ const size_t kCostWindow = 1800;
 
 struct Filter {
   obs_source_t* self = nullptr;
-  const uint32_t monitor_handle;
+  const int64_t monitor_handle;  // sign-extended
   std::atomic<bool> desktop_front{true};
   std::atomic<bool> report_again{false};
 
@@ -69,7 +70,7 @@ struct Filter {
   uint64_t game_frames = 0;
   uint64_t brb_frames = 0;
 
-  Filter(obs_source_t* source, uint64_t hwnd, uint32_t monitor, bool front)
+  Filter(obs_source_t* source, uint64_t hwnd, int64_t monitor, bool front)
       : self(source),
         monitor_handle(monitor),
         facts(new Win32Facts(hwnd, monitor)) {
@@ -307,12 +308,12 @@ const char* GetName(void*) {
 
 void* Create(obs_data_t* settings, obs_source_t* source) {
   uint64_t hwnd = (uint64_t)obs_data_get_int(settings, kSettingHwnd);
-  uint32_t monitor =
-      (uint32_t)obs_data_get_int(settings, kSettingMonitorHandle);
+  int64_t monitor = ::settings::ParseHandle(settings, kSettingMonitorHandle);
   bool front = obs_data_get_bool(settings, kSettingDesktopFront);
   Filter* f = new Filter(source, hwnd, monitor, front);
-  blog(LOG_INFO, "follow-window: on (hwnd 0x%llx pid %u monitor 0x%x)",
-       (unsigned long long)hwnd, f->facts->game_pid(), monitor);
+  blog(LOG_INFO, "follow-window: on (hwnd 0x%llx pid %u monitor 0x%llx)",
+       (unsigned long long)hwnd, f->facts->game_pid(),
+       (unsigned long long)monitor);
   obs_add_tick_callback(OnTick, f);
   return f;
 }
@@ -535,7 +536,7 @@ Filter* FilterOf(obs_source_t* filter) {
 
 }  // namespace
 
-obs_source_t* CreateFilter(uint64_t hwnd, uint32_t monitor_handle,
+obs_source_t* CreateFilter(uint64_t hwnd, int64_t monitor_handle,
                            bool desktop_front) {
   RegisterOnce();
   obs_data_t* settings = obs_data_create();
@@ -583,6 +584,11 @@ void SetDesktopFront(obs_source_t* filter, bool front) {
   if (f) {
     f->desktop_front.store(front);
   }
+}
+
+uint64_t MonitorBits(obs_source_t* filter) {
+  Filter* f = FilterOf(filter);
+  return f && f->facts ? f->facts->monitor_bits() : 0;
 }
 
 }  // namespace follow_window

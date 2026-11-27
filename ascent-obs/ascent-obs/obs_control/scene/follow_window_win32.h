@@ -35,7 +35,8 @@ struct Probe {
 
 class Win32Facts {
 public:
-  Win32Facts(uint64_t hwnd, uint32_t monitor_handle);
+  // |monitor_handle|: sign-extended (settings::NormalizeHandle)
+  Win32Facts(uint64_t hwnd, int64_t monitor_handle);
 
   uint32_t game_pid() const { return game_pid_; }
   uint64_t target() const { return target_; }
@@ -46,10 +47,13 @@ public:
   // reports the target as gone instead.
   Probe Read(bool may_adopt);
 
+  // the HMONITOR every read asks Windows about, as its 64 pointer bits
+  uint64_t monitor_bits() const;
+
 private:
   uint64_t target_;
   uint32_t game_pid_;
-  uint32_t monitor_handle_;
+  int64_t monitor_handle_;
 };
 
 }  // namespace follow_window

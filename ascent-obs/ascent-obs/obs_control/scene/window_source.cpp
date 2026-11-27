@@ -1,4 +1,5 @@
 #include "obs_control/scene/window_source.h"
+#include "obs_control/settings.h"
 #include <map>
 #include <windows.h>
 
@@ -40,9 +41,9 @@ bool WindowSource::Create(OBSData& data, obs_scene_t* scene,
   }
 
   cursor_ = obs_data_get_bool(data, kSettingCursor);
-  window_handle_ = (int)obs_data_get_int(data, kSettingWindowHandle);
+  window_handle_ = settings::ParseHandle(data, kSettingWindowHandle);
 
-  blog(LOG_INFO, "capture window handle %d.", window_handle_);
+  blog(LOG_INFO, "capture window handle %lld.", (long long)window_handle_);
 
   if (!CreateWindowSource(scene)) {
     return false;
@@ -72,8 +73,8 @@ bool WindowSource::CreateWindowSource(obs_scene_t* scene) {
   SetTransform(source_item_, OBS_BOUNDS_STRETCH);
 
   blog(LOG_INFO,
-       "window source [handle:%d cursor:%d] added",
-       window_handle_,
+       "window source [handle:%lld cursor:%d] added",
+       (long long)window_handle_,
        cursor_);
 
   return true;
