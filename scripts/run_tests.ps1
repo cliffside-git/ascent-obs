@@ -44,6 +44,8 @@ $Sources = @(
     (Join-Path $SrcDir "obs_control\obs_audio_source_control.cpp"),
     (Join-Path $SrcDir "obs_control\obs_utils.cpp"),
     (Join-Path $SrcDir "obs_control\settings.cpp"),
+    (Join-Path $SrcDir "obs_control\scene\follow_window_filter.cpp"),
+    (Join-Path $SrcDir "obs_control\scene\follow_window_win32.cpp"),
     (Join-Path $LibDir "internal\communications\protocol.cpp")
 ) | ForEach-Object { "`"$_`"" }
 
@@ -54,7 +56,7 @@ foreach ($Test in Get-ChildItem $TestsDir -Filter *_test.cpp) {
     $Cl = "cl /nologo /EHsc /std:c++17 /W4 /wd4127 /wd4201 /DUNICODE /D_UNICODE " +
           "/D_CRT_SECURE_NO_WARNINGS /D_HAVE_OBSCONFIG_H $($Includes -join ' ') " +
           "`"$($Test.FullName)`" $($Sources -join ' ') /Fo`"$OutDir\\`" /Fe`"$Exe`" " +
-          "/link /LIBPATH:`"$BuildDir\libobs\$Configuration`" obs.lib"
+          "/link /LIBPATH:`"$BuildDir\libobs\$Configuration`" obs.lib user32.lib"
     cmd /c "`"$VcVars`" >nul && $Cl"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "build failed: $($Test.Name)" -ForegroundColor Red

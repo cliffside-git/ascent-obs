@@ -69,7 +69,8 @@ bool MonitorSource::Create(OBSData& data, obs_scene_t* scene,
        config_.method, config_.brb_when_unfocused);
 
   monitor_index_ = 0;
-  monitor_handle_ = (uint32_t)obs_data_get_int(data, kSettingMonitorHandle);
+  monitor_handle_ =
+      (uint32_t)settings::ParseHandle(data, kSettingMonitorHandle);
 
   if (monitors.empty()) {
     EnumDisplayMonitors(NULL, NULL, enum_monitor_props, NULL);

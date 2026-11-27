@@ -267,6 +267,10 @@ std::string settings::AddRawJsonMember(const std::string& json,
   return json.substr(0, last + 1) + member + json.substr(last + 1);
 }
 
+int64_t settings::ParseHandle(obs_data_t* data, const char* key) {
+  return (uint32_t)obs_data_get_int(data, key);
+}
+
 void settings::FillMonitorCaptureSettings(obs_data_t* out,
                                           uint32_t monitor_handle,
                                           int monitor_index, bool cursor,

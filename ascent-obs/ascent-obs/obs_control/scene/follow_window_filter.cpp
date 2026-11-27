@@ -585,4 +585,9 @@ void SetDesktopFront(obs_source_t* filter, bool front) {
   }
 }
 
+uint64_t MonitorBits(obs_source_t* filter) {
+  Filter* f = FilterOf(filter);
+  return f && f->facts ? f->facts->monitor_bits() : 0;
+}
+
 }  // namespace follow_window

@@ -46,6 +46,9 @@ public:
   // reports the target as gone instead.
   Probe Read(bool may_adopt);
 
+  // the HMONITOR every read asks Windows about, as its 64 pointer bits
+  uint64_t monitor_bits() const;
+
 private:
   uint64_t target_;
   uint32_t game_pid_;

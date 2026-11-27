@@ -218,6 +218,10 @@ Win32Facts::Win32Facts(uint64_t hwnd, uint32_t monitor_handle)
   }
 }
 
+uint64_t Win32Facts::monitor_bits() const {
+  return (uint64_t)(uintptr_t)(HMONITOR)(uintptr_t)monitor_handle_;
+}
+
 Probe Win32Facts::Read(bool may_adopt) {
   uint64_t start = os_gettime_ns();
   DpiScope dpi;

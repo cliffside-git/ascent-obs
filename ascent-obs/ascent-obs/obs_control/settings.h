@@ -154,6 +154,9 @@ void FillFollowWindowSourceEvent(obs_data_t* out, bool show_game,
 std::string AddRawJsonMember(const std::string& json, const char* key,
                              const std::string& raw);
 
+// the window or monitor handle the desktop sent under |key|
+int64_t ParseHandle(obs_data_t* data, const char* key);
+
 // the settings the monitor source gives OBS's monitor_capture. Follow-window
 // mode adds nothing here: it is a filter on top of the same source.
 void FillMonitorCaptureSettings(obs_data_t* out, uint32_t monitor_handle,

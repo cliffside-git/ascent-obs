@@ -47,6 +47,10 @@ void ReportAgain(obs_source_t* filter);
 // rule 6: the desktop's CMD_GAME_FOCUS_CHANGED state, ORed into the guard
 void SetDesktopFront(obs_source_t* filter, bool front);
 
+// the HMONITOR |filter|'s window facts read, as its 64 pointer bits (0 when
+// |filter| is not a follow-window filter)
+uint64_t MonitorBits(obs_source_t* filter);
+
 // the name of the proc both monitor capture plugins answer with what their
 // image is: bool valid, int present_ns, int x, int y, int width, int height
 extern const char kFrameInfoProc[];
