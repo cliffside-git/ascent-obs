@@ -191,17 +191,19 @@ uint64_t settings::ParseMonitorFollowWindow(obs_data_t* monitor_settings) {
   if (!has_value) {
     return 0;
   }
-  // HWNDs are 32-bit values; anything else is not a window
+  // HWNDs are 32-bit values, sent signed (sign-extended) or zero-extended;
+  // anything else is not a window
+  const long long kMinHwnd = -0x80000000ll;
   const long long kMaxHwnd = 0xFFFFFFFFll;
   if (!is_int) {
     blog(LOG_WARNING, "invalid follow_window (not an integer), ignored");
     return 0;
   }
-  if (hwnd < 0 || hwnd > kMaxHwnd) {
+  if (hwnd < kMinHwnd || hwnd > kMaxHwnd) {
     blog(LOG_WARNING, "invalid follow_window %lld, ignored", hwnd);
     return 0;
   }
-  return (uint64_t)hwnd;
+  return (uint64_t)NormalizeHandle(hwnd);
 }
 
 bool settings::FollowWindowActive(uint64_t follow_window, int method,
@@ -267,12 +269,16 @@ std::string settings::AddRawJsonMember(const std::string& json,
   return json.substr(0, last + 1) + member + json.substr(last + 1);
 }
 
+int64_t settings::NormalizeHandle(long long value) {
+  return (int64_t)(int32_t)(uint32_t)(unsigned long long)value;
+}
+
 int64_t settings::ParseHandle(obs_data_t* data, const char* key) {
-  return (uint32_t)obs_data_get_int(data, key);
+  return NormalizeHandle(obs_data_get_int(data, key));
 }
 
 void settings::FillMonitorCaptureSettings(obs_data_t* out,
-                                          uint32_t monitor_handle,
+                                          int64_t monitor_handle,
                                           int monitor_index, bool cursor,
                                           int method) {
   obs_data_set_int(out, "monitor_handle", monitor_handle);

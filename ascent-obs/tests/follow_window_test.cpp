@@ -67,7 +67,10 @@ void TestParse() {
 
   printf("valid HWND integers pass through\n");
   CHECK(Follow(R"({"follow_window":133090})") == 133090);
-  CHECK(Follow(R"({"follow_window":4294967295})") == 4294967295ull);
+  printf("32-bit HWNDs keep Windows' sign extension\n");
+  CHECK(Follow(R"({"follow_window":4294967295})") == 0xFFFFFFFFFFFFFFFFull);
+  CHECK(Follow(R"({"follow_window":-5})") == 0xFFFFFFFFFFFFFFFBull);
+  CHECK(Follow(R"({"follow_window":-2147483648})") == 0xFFFFFFFF80000000ull);
 
   printf("0 -> off\n");
   CHECK(Follow(R"({"follow_window":0})") == 0);
@@ -76,7 +79,7 @@ void TestParse() {
   CHECK(Follow(R"({"follow_window":"133090"})") == 0);
   CHECK(Follow(R"({"follow_window":"abc"})") == 0);
   CHECK(Follow(R"({"follow_window":1.5})") == 0);
-  CHECK(Follow(R"({"follow_window":-5})") == 0);
+  CHECK(Follow(R"({"follow_window":-2147483649})") == 0);
   CHECK(Follow(R"({"follow_window":4294967296})") == 0);
   CHECK(Follow(R"({"follow_window":true})") == 0);
   CHECK(Follow(R"({"follow_window":{"hwnd":1}})") == 0);

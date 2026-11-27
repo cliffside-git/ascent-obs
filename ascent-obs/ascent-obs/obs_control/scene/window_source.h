@@ -19,7 +19,8 @@ public:
 
   virtual ~WindowSource() {};
 
-  const uint32_t& window_handle() { return window_handle_; }
+  // sign-extended (settings::NormalizeHandle)
+  int64_t window_handle() const { return window_handle_; }
 
   virtual bool Create(OBSData& data, obs_scene_t* scene, bool visible = true);
 
@@ -38,7 +39,7 @@ private:
 
 private:
   bool cursor_ = false;
-  uint32_t window_handle_ = 0;
+  int64_t window_handle_ = 0;
 
 };
 

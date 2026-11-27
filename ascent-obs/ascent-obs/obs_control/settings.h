@@ -154,12 +154,19 @@ void FillFollowWindowSourceEvent(obs_data_t* out, bool show_game,
 std::string AddRawJsonMember(const std::string& json, const char* key,
                              const std::string& raw);
 
-// the window or monitor handle the desktop sent under |key|
+// Windows keeps 32 significant bits in a window or monitor handle, and
+// 64-bit code sees it sign-extended: monitor 0xa235059b is HMONITOR
+// 0xffffffffa235059b. The desktop sends the signed value (handle.0 as
+// isize); a sender that zero-extended it means the same handle. Returns the
+// sign-extended value, which casts to the handle with (HMONITOR)(intptr_t).
+int64_t NormalizeHandle(long long value);
+
+// the window or monitor handle the desktop sent under |key|, normalized
 int64_t ParseHandle(obs_data_t* data, const char* key);
 
 // the settings the monitor source gives OBS's monitor_capture. Follow-window
 // mode adds nothing here: it is a filter on top of the same source.
-void FillMonitorCaptureSettings(obs_data_t* out, uint32_t monitor_handle,
+void FillMonitorCaptureSettings(obs_data_t* out, int64_t monitor_handle,
                                 int monitor_index, bool cursor, int method);
 
 // BRB replaces the monitor while the game is unfocused only when the

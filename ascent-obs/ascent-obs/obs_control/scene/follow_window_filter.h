@@ -22,8 +22,9 @@ namespace follow_window {
 
 // a private filter source following |hwnd| on |monitor_handle|; attach it
 // with obs_source_filter_add before the source is shown, never remove it,
-// release it with obs_source_release
-obs_source_t* CreateFilter(uint64_t hwnd, uint32_t monitor_handle,
+// release it with obs_source_release. |monitor_handle| is sign-extended
+// (settings::NormalizeHandle)
+obs_source_t* CreateFilter(uint64_t hwnd, int64_t monitor_handle,
                            bool desktop_front);
 
 // a later START names another window: the graphics thread switches to it at

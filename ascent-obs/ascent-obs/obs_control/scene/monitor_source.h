@@ -24,7 +24,8 @@ public:
   const bool& force() { return force_; }
   const bool& compatible_mode() { return compatible_mode_; }
   const int& monitor_id() { return monitor_index_; }
-  const uint32_t monitor_handle() { return monitor_handle_; }
+  // sign-extended (settings::NormalizeHandle)
+  int64_t monitor_handle() const { return monitor_handle_; }
   const bool& brb_when_unfocused() { return config_.brb_when_unfocused; }
   bool follows_window() const { return follow_filter_ != nullptr; }
   const settings::MonitorConfig& config() const { return config_; }
@@ -84,7 +85,7 @@ public:
   // the black-texture fallback: the same monitor through GDI, built from
   // the replaced source's whole |config| (window, cursor, method, BRB mode)
   bool CreateCompatibility(int monitor_id,
-                           uint32_t monitor_handle,
+                           int64_t monitor_handle,
                            obs_scene_t* scene,
                            bool force,
                            const settings::MonitorConfig& config);
@@ -101,7 +102,7 @@ private:
   settings::MonitorConfig config_;
   bool force_ = false;
   int monitor_index_ = 0;
-  uint32_t monitor_handle_ = 0;
+  int64_t monitor_handle_ = 0;
   bool compatible_mode_;
   bool desktop_front_ = true;
   bool blocked_ = false;

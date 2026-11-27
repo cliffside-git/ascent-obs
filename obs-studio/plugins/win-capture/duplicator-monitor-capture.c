@@ -283,7 +283,12 @@ static BOOL CALLBACK enum_monitor_by_handle(HMONITOR handle, HDC hdc,
 		device.cb = sizeof(device);
 		if (EnumDisplayDevicesA(mi.szDevice, 0, &device,
 					EDD_GET_DEVICE_INTERFACE_NAME)) {
-			match = monitor->handle && monitor->handle == handle;
+			// ASCENT_EDIT_START: compare the 32 bits a handle has
+			// (a zero-extended copy is the same monitor)
+			match = monitor->handle &&
+				(uint32_t)(uintptr_t)monitor->handle ==
+					(uint32_t)(uintptr_t)handle;
+			// ASCENT_EDIT_END: compare the 32 bits a handle has
 			if (match) {
 				monitor->valid = true;
 				monitor->rect = *rect;
@@ -404,8 +409,11 @@ static inline void update_settings(struct duplicator_capture *capture,
 {
 	pthread_mutex_lock(&capture->update_mutex);
 
-      HMONITOR monitor_handle =
-		(HMONITOR)obs_data_get_int(settings, "monitor_handle");
+	// ASCENT_EDIT_START: a handle has 32 bits; 64-bit code sees it
+	// sign-extended, whichever way the integer was sent
+	HMONITOR monitor_handle = (HMONITOR)(intptr_t)(int32_t)obs_data_get_int(
+		settings, "monitor_handle");
+	// ASCENT_EDIT_END: a handle has 32 bits
 
 	struct duplicator_monitor_info monitor =
 		find_monitor(obs_data_get_string(settings, "monitor_id"));
@@ -416,7 +424,7 @@ static inline void update_settings(struct duplicator_capture *capture,
 		if (monitor1.valid) {
 			monitor = monitor1;
 			capture->handle = monitor_handle;
-			info("found monitor id [%d] by handle [%d] (id: %s)",
+			info("found monitor id [%d] by handle [%p] (id: %s)",
 			     monitor.index, monitor_handle, monitor.device_id);
 		}           
 	}

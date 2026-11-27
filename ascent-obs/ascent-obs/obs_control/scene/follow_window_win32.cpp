@@ -210,7 +210,14 @@ std::string ClassOf(HWND hwnd) {
 
 }  // namespace
 
-Win32Facts::Win32Facts(uint64_t hwnd, uint32_t monitor_handle)
+namespace {
+// the handle Windows gave 64-bit code: sign-extended from its 32 bits
+HMONITOR ToHmonitor(int64_t monitor_handle) {
+  return (HMONITOR)(intptr_t)(int32_t)monitor_handle;
+}
+}  // namespace
+
+Win32Facts::Win32Facts(uint64_t hwnd, int64_t monitor_handle)
     : target_(hwnd), game_pid_(0), monitor_handle_(monitor_handle) {
   HWND h = (HWND)(uintptr_t)hwnd;
   if (IsWindow(h)) {
@@ -219,7 +226,7 @@ Win32Facts::Win32Facts(uint64_t hwnd, uint32_t monitor_handle)
 }
 
 uint64_t Win32Facts::monitor_bits() const {
-  return (uint64_t)(uintptr_t)(HMONITOR)(uintptr_t)monitor_handle_;
+  return (uint64_t)(uintptr_t)ToHmonitor(monitor_handle_);
 }
 
 Probe Win32Facts::Read(bool may_adopt) {
@@ -258,7 +265,7 @@ Probe Win32Facts::Read(bool may_adopt) {
   // rule 3: the monitor
   MONITORINFO mi;
   mi.cbSize = sizeof(mi);
-  HMONITOR monitor = (HMONITOR)(uintptr_t)monitor_handle_;
+  HMONITOR monitor = ToHmonitor(monitor_handle_);
   if (GetMonitorInfoW(monitor, &mi)) {
     s.monitor.left = mi.rcMonitor.left;
     s.monitor.top = mi.rcMonitor.top;
