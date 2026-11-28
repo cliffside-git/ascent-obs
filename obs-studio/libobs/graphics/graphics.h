@@ -929,6 +929,10 @@ gs_get_duplicator_monitor_info(int monitor_idx,
 			       struct gs_monitor_info *monitor_info);
 
 EXPORT int gs_duplicator_get_monitor_index(void *monitor);
+// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+/** the monitor's SDR white level in nits, 0 when unknown */
+EXPORT float gs_get_monitor_sdr_white_level(void *monitor);
+// ASCENT_EDIT_END: SDR output of an HDR (scRGB) desktop capture
 
 /** creates a windows 8+ output duplicator (monitor capture) */
 EXPORT gs_duplicator_t *gs_duplicator_create(int monitor_idx);

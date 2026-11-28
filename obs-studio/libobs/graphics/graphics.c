@@ -3098,6 +3098,19 @@ int gs_duplicator_get_monitor_index(void *monitor)
 		thread_graphics->device, monitor);
 }
 
+// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+float gs_get_monitor_sdr_white_level(void *monitor)
+{
+	if (!gs_valid("gs_get_monitor_sdr_white_level"))
+		return 0.f;
+	if (!thread_graphics->exports.device_get_monitor_sdr_white_level)
+		return 0.f;
+
+	return thread_graphics->exports.device_get_monitor_sdr_white_level(
+		thread_graphics->device, monitor);
+}
+// ASCENT_EDIT_END: SDR output of an HDR (scRGB) desktop capture
+
 gs_duplicator_t *gs_duplicator_create(int monitor_idx)
 {
 	if (!gs_valid("gs_duplicator_create"))

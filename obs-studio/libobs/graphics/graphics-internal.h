@@ -313,6 +313,10 @@ struct gs_exports {
 		struct gs_monitor_info *monitor_info);
 	int (*device_duplicator_get_monitor_index)(gs_device_t *device,
 						   void *monitor);
+	// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+	float (*device_get_monitor_sdr_white_level)(gs_device_t *device,
+						    void *monitor);
+	// ASCENT_EDIT_END: SDR output of an HDR (scRGB) desktop capture
 
 	gs_duplicator_t *(*device_duplicator_create)(gs_device_t *device,
 						     int monitor_idx);

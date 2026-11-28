@@ -68,7 +68,10 @@ void gs_duplicator::Start()
 			gs_monitor_color_info info =
 				device->GetMonitorColorInfo(desc.Monitor);
 			hdr = info.hdr;
-			sdr_white_nits = (float)info.sdr_white_nits;
+			// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+			if (info.sdr_white_nits)
+				sdr_white_nits = (float)info.sdr_white_nits;
+			// ASCENT_EDIT_END: SDR output of an HDR (scRGB) desktop capture
 		}
 	} else {
 		hr = output->QueryInterface(IID_PPV_ARGS(output1.Assign()));

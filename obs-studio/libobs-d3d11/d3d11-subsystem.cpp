@@ -23,6 +23,9 @@
 #include <util/dstr.h>
 #include <util/util.hpp>
 #include <graphics/matrix3.h>
+// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+#include <graphics/scrgb-draw.h>
+// ASCENT_EDIT_END: SDR output of an HDR (scRGB) desktop capture
 #include <winternl.h>
 #include <d3d9.h>
 #include "d3d11-subsystem.hpp"
@@ -1237,24 +1240,27 @@ static HRESULT GetPathInfo(HMONITOR hMonitor,
 
 static ULONG GetSdrMaxNits(HMONITOR monitor)
 {
-	ULONG nits = 80;
+	// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+	bool queried = false;
+	DISPLAYCONFIG_SDR_WHITE_LEVEL level = {};
+	// ASCENT_EDIT_END: SDR output of an HDR (scRGB) desktop capture
 
 	DISPLAYCONFIG_PATH_INFO info;
 	if (SUCCEEDED(GetPathInfo(monitor, &info))) {
 		const DISPLAYCONFIG_PATH_TARGET_INFO &targetInfo =
 			info.targetInfo;
 
-		DISPLAYCONFIG_SDR_WHITE_LEVEL level;
 		DISPLAYCONFIG_DEVICE_INFO_HEADER &header = level.header;
 		header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
 		header.size = sizeof(level);
 		header.adapterId = targetInfo.adapterId;
 		header.id = targetInfo.id;
-		if (DisplayConfigGetDeviceInfo(&header) == ERROR_SUCCESS)
-			nits = (level.SDRWhiteLevel * 80) / 1000;
+		// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+		queried = DisplayConfigGetDeviceInfo(&header) == ERROR_SUCCESS;
 	}
 
-	return nits;
+	return gs_sdr_white_nits(queried, level.SDRWhiteLevel);
+	// ASCENT_EDIT_END: SDR output of an HDR (scRGB) desktop capture
 }
 
 gs_monitor_color_info gs_device::GetMonitorColorInfo(HMONITOR hMonitor)
@@ -1299,7 +1305,9 @@ gs_monitor_color_info gs_device::GetMonitorColorInfo(HMONITOR hMonitor)
 		}
 	}
 
-	return gs_monitor_color_info(false, 8, 80);
+	// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+	return gs_monitor_color_info(false, 8, 0);
+	// ASCENT_EDIT_END: SDR output of an HDR (scRGB) desktop capture
 }
 
 static void PopulateMonitorIds(HMONITOR handle, char *id, char *alt_id,
@@ -3298,6 +3306,15 @@ extern "C" EXPORT bool device_is_monitor_hdr(gs_device_t *device, void *monitor)
 	const HMONITOR hMonitor = static_cast<HMONITOR>(monitor);
 	return device->GetMonitorColorInfo(hMonitor).hdr;
 }
+
+// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+extern "C" EXPORT float
+device_get_monitor_sdr_white_level(gs_device_t *device, void *monitor)
+{
+	const HMONITOR hMonitor = static_cast<HMONITOR>(monitor);
+	return (float)device->GetMonitorColorInfo(hMonitor).sdr_white_nits;
+}
+// ASCENT_EDIT_END: SDR output of an HDR (scRGB) desktop capture
 
 extern "C" EXPORT void device_debug_marker_begin(gs_device_t *,
 						 const char *markername,
