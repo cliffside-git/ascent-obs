@@ -317,6 +317,24 @@ void TestGpu() {
     CHECK(rms <= 4.);
   }
 }
+BOOL CALLBACK AddMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM list) {
+  ((std::vector<HMONITOR>*)list)->push_back(monitor);
+  return TRUE;
+}
+
+void TestMonitorWhite() {
+  printf("gs_get_monitor_sdr_white_level through libobs-d3d11\n");
+  std::vector<HMONITOR> monitors;
+  EnumDisplayMonitors(nullptr, nullptr, AddMonitor, (LPARAM)&monitors);
+  CHECK(!monitors.empty());
+  for (HMONITOR monitor : monitors) {
+    const float nits = gs_get_monitor_sdr_white_level(monitor);
+    printf("    monitor %p: %.0f nits\n", (void*)monitor, nits);
+    CHECK(nits >= 80.f);
+  }
+  printf("not a monitor -> unknown (0)\n");
+  CHECK(gs_get_monitor_sdr_white_level((void*)(intptr_t)0x7fff0001) == 0.f);
+}
 }  // namespace
 
 int main(int, char**) {
@@ -333,6 +351,7 @@ int main(int, char**) {
   CHECK(video);
   if (video) {
     obs_enter_graphics();
+    TestMonitorWhite();
     TestGpu();
     obs_leave_graphics();
   }

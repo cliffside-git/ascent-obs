@@ -1305,7 +1305,9 @@ gs_monitor_color_info gs_device::GetMonitorColorInfo(HMONITOR hMonitor)
 		}
 	}
 
-	return gs_monitor_color_info(false, 8, 80);
+	// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+	return gs_monitor_color_info(false, 8, 0);
+	// ASCENT_EDIT_END: SDR output of an HDR (scRGB) desktop capture
 }
 
 static void PopulateMonitorIds(HMONITOR handle, char *id, char *alt_id,
@@ -3304,6 +3306,15 @@ extern "C" EXPORT bool device_is_monitor_hdr(gs_device_t *device, void *monitor)
 	const HMONITOR hMonitor = static_cast<HMONITOR>(monitor);
 	return device->GetMonitorColorInfo(hMonitor).hdr;
 }
+
+// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+extern "C" EXPORT float
+device_get_monitor_sdr_white_level(gs_device_t *device, void *monitor)
+{
+	const HMONITOR hMonitor = static_cast<HMONITOR>(monitor);
+	return (float)device->GetMonitorColorInfo(hMonitor).sdr_white_nits;
+}
+// ASCENT_EDIT_END: SDR output of an HDR (scRGB) desktop capture
 
 extern "C" EXPORT void device_debug_marker_begin(gs_device_t *,
 						 const char *markername,

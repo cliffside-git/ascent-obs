@@ -905,7 +905,9 @@ static void duplicator_capture_render(void *data, gs_effect_t *unused)
 				// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
 				const struct gs_scrgb_draw draw =
 					gs_scrgb_capture_draw(
-						current_space, 0.f,
+						current_space,
+						gs_get_monitor_sdr_white_level(
+							capture->handle),
 						obs_get_video_sdr_white_level());
 				tech_name = draw.tech;
 				multiplier = draw.multiplier;

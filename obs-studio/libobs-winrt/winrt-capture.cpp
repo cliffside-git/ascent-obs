@@ -724,8 +724,15 @@ extern "C" EXPORT void winrt_capture_render(struct winrt_capture *capture)
 		const gs_color_space current_space = gs_get_color_space();
 		if (capture->format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
 			// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+			const HMONITOR monitor =
+				capture->window
+					? MonitorFromWindow(
+						  capture->window,
+						  MONITOR_DEFAULTTONEAREST)
+					: capture->monitor;
 			const gs_scrgb_draw draw = gs_scrgb_capture_draw(
-				current_space, 0.f,
+				current_space,
+				gs_get_monitor_sdr_white_level(monitor),
 				obs_get_video_sdr_white_level());
 			tech_name = draw.tech;
 			multiplier = draw.multiplier;
