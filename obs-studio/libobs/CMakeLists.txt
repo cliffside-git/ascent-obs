@@ -230,6 +230,7 @@ target_sources(
           graphics/plane.h
           graphics/quat.c
           graphics/quat.h
+          graphics/scrgb-draw.h
           graphics/shader-parser.c
           graphics/shader-parser.h
           graphics/srgb.h
@@ -300,6 +301,7 @@ set(public_headers
     graphics/matrix4.h
     graphics/plane.h
     graphics/quat.h
+    graphics/scrgb-draw.h
     graphics/shader-parser.h
     graphics/srgb.h
     graphics/vec2.h

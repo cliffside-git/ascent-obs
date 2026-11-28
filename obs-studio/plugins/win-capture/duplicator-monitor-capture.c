@@ -8,6 +8,9 @@
 // ASCENT_EDIT_START: frame provenance for follow-window capture
 #include <util/util_uint64.h>
 // ASCENT_EDIT_END: frame provenance for follow-window capture
+// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+#include <graphics/scrgb-draw.h>
+// ASCENT_EDIT_END: SDR output of an HDR (scRGB) desktop capture
 #ifdef OBS_LEGACY
 #include "../../libobs/util/platform.h"
 #include "../../libobs-winrt/winrt-capture.h"
@@ -899,20 +902,14 @@ static void duplicator_capture_render(void *data, gs_effect_t *unused)
 					     gs_duplicator_get_sdr_white_level(
 						     capture->duplicator);
 			} else {
-				switch (current_space) {
-				case GS_CS_SRGB:
-				case GS_CS_SRGB_16F:
-					tech_name = "DrawMultiplyTonemap";
-					multiplier =
-						80.f /
-						obs_get_video_sdr_white_level();
-					break;
-				case GS_CS_709_EXTENDED:
-					tech_name = "DrawMultiply";
-					multiplier =
-						80.f /
-						obs_get_video_sdr_white_level();
-				}
+				// ASCENT_EDIT_START: SDR output of an HDR (scRGB) desktop capture
+				const struct gs_scrgb_draw draw =
+					gs_scrgb_capture_draw(
+						current_space, 0.f,
+						obs_get_video_sdr_white_level());
+				tech_name = draw.tech;
+				multiplier = draw.multiplier;
+				// ASCENT_EDIT_END: SDR output of an HDR (scRGB) desktop capture
 			}
 		} else if (current_space == GS_CS_709_SCRGB) {
 			tech_name = "DrawMultiply";
